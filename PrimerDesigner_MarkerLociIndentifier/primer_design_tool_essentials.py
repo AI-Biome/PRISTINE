@@ -739,6 +739,40 @@ class MSAStrategy:
                 rev = row.get("RIGHT_PRIMER")
                 if pd.notna(fwd) and pd.notna(rev):
                     f.write(f">{name}\n{fwd} {rev}\n")
+                    
+    def greedy_cgmlst_selection(
+        snp_summary_df: pd.DataFrame,
+        prop_threshold: float = 0.1,
+        coverage_threshold: float = 0.8
+    ) -> List[str]:
+        locus_info = snp_summary_df.copy()
+        prop_cols = [col for col in locus_info.columns if col.startswith("Prop_") and col != "Avg_Prop_Informative_SNPs"]
+        total_non_targets = len(prop_cols)
+
+        # For each locus, determine which non-targets it discriminates based on the threshold
+        locus_info["Discriminated"] = locus_info[prop_cols].apply(
+            lambda row: {col for col in prop_cols if pd.notna(row[col]) and row[col] >= prop_threshold}, axis=1
+        )
+
+        # Sort loci by average informativeness descending
+        locus_info = locus_info.sort_values("Avg_Prop_Informative_SNPs", ascending=False)
+
+        selected_loci = []
+        covered_non_targets = set()
+
+        for _, row in locus_info.iterrows():
+            new_covered = row["Discriminated"] - covered_non_targets
+            if not new_covered:
+                continue
+
+            selected_loci.append(row["Locus"])
+            covered_non_targets.update(new_covered)
+
+            # Check if coverage threshold is met
+            if len(covered_non_targets) / total_non_targets >= coverage_threshold:
+                break
+
+        return selected_loci
 
     # --- Internal Classes ---
     
