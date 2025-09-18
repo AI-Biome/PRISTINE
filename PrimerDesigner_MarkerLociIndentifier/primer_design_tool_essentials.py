@@ -741,6 +741,7 @@ class MSAStrategy:
                     f.write(f">{name}\n{fwd} {rev}\n")
 
     def run_ecopcr_validation(
+        self,    
         database_fasta,
         primer_forward,
         primer_reverse,
