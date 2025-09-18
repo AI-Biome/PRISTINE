@@ -739,6 +739,61 @@ class MSAStrategy:
                 rev = row.get("RIGHT_PRIMER")
                 if pd.notna(fwd) and pd.notna(rev):
                     f.write(f">{name}\n{fwd} {rev}\n")
+
+    def run_ecopcr_validation(
+        database_fasta,
+        primer_forward,
+        primer_reverse,
+        output_path="ecopcr_results.txt",
+        max_errors=2,
+        min_length=100,
+        max_length=1000,
+        verbose=True
+    ):
+        """
+        Runs ecoPCR on a reference database to validate a primer pair.
+
+        Parameters:
+        - database_fasta: path to reference FASTA file
+        - primer_forward: forward primer sequence (5' to 3')
+        - primer_reverse: reverse primer sequence (5' to 3')
+        - output_path: where to save the ecoPCR output
+        - max_errors: maximum number of mismatches allowed per primer
+        - min_length: minimum acceptable amplicon length
+        - max_length: maximum acceptable amplicon length
+        - verbose: print status messages
+
+        Returns:
+        - path to output file
+        """
+
+        db_base = os.path.splitext(database_fasta)[0]
+        ecopcr_db = db_base + ".ecopcr"
+
+        # Step 1: Convert FASTA to .ecopcr format using obiimport
+        if not os.path.exists(ecopcr_db):
+            if verbose:
+                print(f"Converting {database_fasta} to ecoPCR database...")
+            cmd_convert = f"obiimport --fasta {database_fasta} > {ecopcr_db}"
+            subprocess.run(cmd_convert, shell=True, check=True)
+        else:
+            if verbose:
+                print(f"Using existing ecoPCR database: {ecopcr_db}")
+
+        # Step 2: Run ecoPCR
+        cmd_ecopcr = (
+            f"ecopcr -d {ecopcr_db} -e {max_errors} -l {min_length} -L {max_length} "
+            f"{primer_forward} {primer_reverse} > {output_path}"
+        )
+
+        if verbose:
+            print("Running ecoPCR...")
+        subprocess.run(cmd_ecopcr, shell=True, check=True)
+
+        if verbose:
+            print(f"ecoPCR results saved to: {output_path}")
+
+        return output_path
                     
     def greedy_cgmlst_selection(
         snp_summary_df: pd.DataFrame,
