@@ -802,6 +802,138 @@ class MSAStrategy:
         name = name.strip().replace(" ", "_")
         # keep letters, numbers, underscore, dash, dot
         return re.sub(r"[^A-Za-z0-9._-]", "_", name) or "primer"
+
+    def validate_primers_from_ecopcr_list(
+        ecopcr_list_path: str,
+        database_fasta: str,
+        output_dir: str = "ecopcr_runs",
+        max_errors: int = 2,
+        min_length: int = 100,
+        max_length: int = 1000,
+        summary_csv: str | None = None,
+        verbose: bool = True,
+    ):
+        """
+        Parse an ecoPCR-style primer list (the output of convert_primer_csv_to_ecopcr)
+        and validate each primer pair using run_ecopcr_validation().
+
+        Parameters:
+        - ecopcr_list_path: path to text file with blocks like:
+              >PrimerName
+              FWDSEQ REVSEQ
+        - database_fasta: path to reference FASTA used by ecoPCR
+        - output_dir: directory to write per-primer ecoPCR outputs
+        - max_errors, min_length, max_length: passed through to run_ecopcr_validation
+        - summary_csv: optional path to write a CSV summary of runs
+        - verbose: print progress
+
+        Returns:
+        - A list of dicts with keys: name, forward, reverse, output_path, status, error
+        """
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        results = []
+        current_name = None
+        line_num = 0
+
+        def log(msg: str):
+            if verbose:
+                print(msg)
+
+        with open(ecopcr_list_path, "r") as fh:
+            lines = fh.readlines()
+
+        i = 0
+        total = 0
+        while i < len(lines):
+            line_num = i + 1
+            line = lines[i].strip()
+            if not line:
+                i += 1
+                continue
+
+            if line.startswith(">"):
+                current_name = line[1:].strip() or "Primer"
+                # next non-empty line should contain "FWD REV"
+                i += 1
+                # skip blank lines between header and sequences (defensive)
+                while i < len(lines) and not lines[i].strip():
+                    i += 1
+                if i >= len(lines):
+                    results.append({
+                        "name": current_name, "forward": None, "reverse": None,
+                        "output_path": None, "status": "error",
+                        "error": f"Missing sequences after header at line {line_num}"
+                    })
+                    break
+
+                seq_line = lines[i].strip()
+                parts = seq_line.split()
+                if len(parts) < 2:
+                    results.append({
+                        "name": current_name, "forward": None, "reverse": None,
+                        "output_path": None, "status": "error",
+                        "error": f"Expected 'FWD REV' on line {i+1}, got: {seq_line}"
+                    })
+                    i += 1
+                    continue
+
+                fwd, rev = parts[0].upper(), parts[1].upper()
+                safe = _safe_filename(current_name)
+                out_path = os.path.join(output_dir, f"{safe}.txt")
+
+                total += 1
+                log(f"[{total}] Validating '{current_name}' ...")
+
+                try:
+                    output_file = run_ecopcr_validation(
+                        database_fasta=database_fasta,
+                        primer_forward=fwd,
+                        primer_reverse=rev,
+                        output_path=out_path,
+                        max_errors=max_errors,
+                        min_length=min_length,
+                        max_length=max_length,
+                        verbose=verbose
+                    )
+                    results.append({
+                        "name": current_name,
+                        "forward": fwd,
+                        "reverse": rev,
+                        "output_path": output_file,
+                        "status": "ok",
+                        "error": ""
+                    })
+                except Exception as e:
+                    results.append({
+                        "name": current_name,
+                        "forward": fwd,
+                        "reverse": rev,
+                        "output_path": out_path,
+                        "status": "error",
+                        "error": str(e)
+                    })
+                    log(f"Error for '{current_name}': {e}")
+
+            else:
+                # Tolerate stray lines by skipping them
+                log(f"Skipping unexpected line {line_num}: {line}")
+
+            i += 1
+
+        if summary_csv:
+            fieldnames = ["name", "forward", "reverse", "output_path", "status", "error"]
+            with open(summary_csv, "w", newline="") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in results:
+                    writer.writerow(row)
+            log(f"Summary saved to: {summary_csv}")
+
+        log(f"Finished. {sum(r['status']=='ok' for r in results)} successful, "
+            f"{sum(r['status']=='error' for r in results)} errors.")
+
+        return results
                     
     def greedy_cgmlst_selection(
         snp_summary_df: pd.DataFrame,
