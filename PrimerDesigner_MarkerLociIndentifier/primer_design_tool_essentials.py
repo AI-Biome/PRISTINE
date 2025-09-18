@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict
 import time
 import yaml
+from pathlib import Path
 
 
 @dataclass
@@ -795,6 +796,12 @@ class MSAStrategy:
             print(f"ecoPCR results saved to: {output_path}")
 
         return output_path
+
+    
+    def _safe_filename(name: str) -> str:
+        name = name.strip().replace(" ", "_")
+        # keep letters, numbers, underscore, dash, dot
+        return re.sub(r"[^A-Za-z0-9._-]", "_", name) or "primer"
                     
     def greedy_cgmlst_selection(
         snp_summary_df: pd.DataFrame,
