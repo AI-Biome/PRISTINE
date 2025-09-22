@@ -804,6 +804,7 @@ class MSAStrategy:
         return re.sub(r"[^A-Za-z0-9._-]", "_", name) or "primer"
 
     def validate_primers_from_ecopcr_list(
+        self,
         ecopcr_list_path: str,
         database_fasta: str,
         output_dir: str = "ecopcr_runs",
@@ -934,6 +935,104 @@ class MSAStrategy:
             f"{sum(r['status']=='error' for r in results)} errors.")
 
         return results
+
+    def design_nested_primers(self, species_folder, specificity_threshold=10, verbose=True):
+        if verbose:
+            print(f"\n=== Designing primers for {species_folder} ===")
+
+        design_result = self.design_primers_from_snp(species_folder)
+        if not design_result or "forward" not in design_result or "reverse" not in design_result:
+            if verbose:
+                print("Primer design failed.")
+            return {"error": "No primers found"}
+
+        fwd = design_result["forward"]
+        rev = design_result["reverse"]
+        product_len = design_result.get("product_size", None)
+
+        if verbose:
+            print(f"Regular primers: {fwd} / {rev} ({product_len} bp)")
+
+        regular_out = os.path.join(species_folder, "regular_ecopcr.txt")
+        self.run_ecopcr_validation(
+            primer_forward=fwd,
+            primer_reverse=rev,
+            output_path=regular_out,
+            species_folder=species_folder,
+            verbose=verbose
+        )
+
+        num_hits = sum(1 for _ in open(regular_out) if _.strip())
+        if verbose:
+            print(f"Regular primer hits: {num_hits}")
+
+        if num_hits <= specificity_threshold:
+            return {
+                "regular": {
+                    "forward": fwd,
+                    "reverse": rev,
+                    "product_size": product_len,
+                    "ecopcr_output": regular_out,
+                    "hits": num_hits
+                }
+            }
+
+        if verbose:
+            print("Regular primers not specific enough. Designing nested primers...")
+
+        # Take the amplicon sequence from your original design result
+        amplicon_seq = design_result.get("amplicon_seq", None)
+        if not amplicon_seq:
+            if verbose:
+                print("Cannot design nested primers (amplicon sequence missing).")
+            return {"error": "No amplicon sequence for nested design"}
+
+        # Define inner sequence (cut off margins)
+        margin = 30
+        inner_seq = amplicon_seq[margin:-margin] if len(amplicon_seq) > 2*margin else amplicon_seq
+
+        # Design nested primers directly (you could wrap primer3 here, or reuse your design method)
+        nested_result = self._design_nested_from_amplicon(inner_seq)
+
+        inner_fwd = nested_result["forward"]
+        inner_rev = nested_result["reverse"]
+        inner_len = nested_result.get("product_size", None)
+
+        if verbose:
+            print(f"Nested primers: {inner_fwd} / {inner_rev} ({inner_len} bp)")
+
+        # Validate nested primers
+        nested_out = os.path.join(species_folder, "nested_ecopcr.txt")
+        self.run_ecopcr_validation(
+            primer_forward=inner_fwd,
+            primer_reverse=inner_rev,
+            output_path=nested_out,
+            species_folder=species_folder,
+            verbose=verbose
+        )
+
+        inner_hits = sum(1 for _ in open(nested_out) if _.strip())
+        if verbose:
+            print(f"Nested primer hits: {inner_hits}")
+
+        return {
+            "nested": {
+                "outer": {
+                    "forward": fwd,
+                    "reverse": rev,
+                    "product_size": product_len,
+                    "ecopcr_output": regular_out,
+                    "hits": num_hits
+                },
+                "inner": {
+                    "forward": inner_fwd,
+                    "reverse": inner_rev,
+                    "product_size": inner_len,
+                    "ecopcr_output": nested_out,
+                    "hits": inner_hits
+                }
+            }
+        }
                     
     def greedy_cgmlst_selection(
         snp_summary_df: pd.DataFrame,
