@@ -35,7 +35,7 @@ A toy dataset is provided in the `toy_dataset/` directory. It includes:
 To quickly test the pipeline:
 
 1. **Download the `toy_dataset/` directory**
-2. **Place the Apptainer container** (`primer_design_tool_full.sif`) inside the `toy_dataset/` folder
+2. **Place the Apptainer container** (`PRISTINE.sif`) inside the `toy_dataset/` folder
 3. From within the `toy_dataset/` directory, run:
 
 ```bash
