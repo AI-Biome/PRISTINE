@@ -9,7 +9,7 @@ To use the pipeline, you will need to have **Apptainer** installed on your syste
 Once Apptainer is installed, no further setup is required. Simply download the pipeline container available at https://nextcloud.uni-greifswald.de/index.php/s/CFPAgy82SSLicqN and run the pipeline using:
 
 ```bash
-./primer_design_tool_full.sif
+./PRISTINE.sif
 ```
 
 This single .sif file encapsulates the entire environment, ensuring consistent and reproducible results across different systems.
