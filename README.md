@@ -6,7 +6,7 @@ This pipeline is distributed as a self-contained [Apptainer](https://apptainer.o
 
 To use the pipeline, you will need to have **Apptainer** installed on your system. Installation instructions are available on the [Apptainer documentation site](https://apptainer.org/docs/).
 
-Once Apptainer is installed, no further setup is required. Simply download the pipeline container available at https://nextcloud.uni-greifswald.de/index.php/s/CFPAgy82SSLicqN and run the pipeline using:
+Once Apptainer is installed, no further setup is required. Simply download the pipeline container available at https://nextcloud.uni-greifswald.de/index.php/s/GGWMXpJEYkQpCxG and run the pipeline using:
 
 ```bash
 ./PRISTINE.sif
