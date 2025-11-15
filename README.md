@@ -23,7 +23,7 @@ To run the pipeline, you need:
 
 ### Configuration File
 
-The file `config.yaml` must be placed in the **same directory as the container** (`primer_design_tool_full.sif`). It defines all global parameters, paths, and settings required for the analysis (for details, see below).
+The file `config.yaml` must be placed in the **same directory as the container** (`PRISTINE.sif`). It defines all global parameters, paths, and settings required for the analysis (for details, see below).
 
 ## Quick Start with Toy Dataset
 
@@ -39,7 +39,7 @@ To quickly test the pipeline:
 3. From within the `toy_dataset/` directory, run:
 
 ```bash
-./primer_design_tool_full.sif
+./PRISTINE.sif
 ```
 ---
 
