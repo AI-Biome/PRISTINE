@@ -25,85 +25,35 @@ from shutil import copyfile
 import re
 import seaborn as sns
 import matplotlib.pyplot as plt
-from collections import Counter
-from dataclasses import dataclass, field
-from typing import Optional, Dict
-import time
-import yaml
 from pathlib import Path
 
+# Import configuration classes from config module
+from config import (
+    Config,
+    ConfigLoader,
+    InputPaths,
+    Primer3Params,
+    SNPPrimerDesignParams,
+    ValidationConfig,
+)
 
-@dataclass
-class InputPaths:
-    raw_dir: Optional[str] = None
-    prokka_dir: Optional[str] = None
-    panaroo_dir: Optional[str] = None
+# Import similarity metrics
+from similarity_metrics import (
+    manhattan_distance,
+    cosine_similarity,
+    jaccard_similarity_with_frequencies,
+    calculate_weighted_minhash_similarity,
+    add_missing_keys_with_zero,
+)
 
+# Import data structures
+from data_structures import Segment, QuasiAlignment
 
-@dataclass
-class Primer3Params:
-    global_params: Dict[str, object] = field(default_factory=dict)
-    design_params: Dict[str, object] = field(default_factory=dict)
-
-
-@dataclass
-class SNPPrimerDesignParams:
-    snp_window_size: int
-    snp_top_n: int
-    min_snps: int
-
-
-@dataclass
-class ValidationConfig:
-    perform: str
-    database: str
-    pblat_min_identity: float
-    match_median_filter_tolerance: int
-
-
-@dataclass
-class Config:
-    input_type: str
-    input_paths: InputPaths
-    output_dir: str
-    max_cores: int
-    aligner: str
-    snp_avg_prop_threshold: float
-    primer3_config_file: Optional[str] = None
-    primer3: Primer3Params = field(default_factory=Primer3Params)
-    snp_primer_design: SNPPrimerDesignParams = field(default_factory=SNPPrimerDesignParams)
-    validation: ValidationConfig = field(default_factory=ValidationConfig)
-
-    def __post_init__(self):
-        allowed_inputs = {"raw", "prokka", "panaroo"}
-        if self.input_type not in allowed_inputs:
-            raise ValueError(f"`input_type` must be one of {allowed_inputs}, got: {self.input_type}")
-
-        active_dir = {
-            "raw": self.input_paths.raw_dir,
-            "prokka": self.input_paths.prokka_dir,
-            "panaroo": self.input_paths.panaroo_dir,
-        }[self.input_type]
-        if not active_dir:
-            raise ValueError(f"{self.input_type}_dir must be set in `input_paths` for input_type = {self.input_type}")
-
-        if self.primer3_config_file and self.primer3.global_params:
-            print("Warning: primer3_config_file is set. Inline primer3 parameters will be ignored.")
-
-
-class ConfigLoader:
-    @staticmethod
-    def load(path: str) -> Config:
-        with open(path, "r") as f:
-            raw = yaml.safe_load(f)
-
-        # Parse nested dataclasses manually
-        raw["input_paths"] = InputPaths(**raw.get("input_paths", {}))
-        raw["primer3"] = Primer3Params(**raw.get("primer3", {}))
-        raw["snp_primer_design"] = SNPPrimerDesignParams(**raw.get("snp_primer_design", {}))
-        raw["validation"] = ValidationConfig(**raw.get("validation", {}))
-
-        return Config(**raw)
+# Import visualization functions
+from visualization import (
+    plot_informativeness_heatmap,
+    plot_snp_density_distribution,
+)
 
 
 class MSAStrategy:
@@ -444,80 +394,20 @@ class MSAStrategy:
         return df
 
     def plot_informativeness_heatmap(self, species_folder):
+        """Generate a heatmap showing informative SNP proportions."""
         output_dir = os.path.join(self.output_dir, species_folder, "informative_loci")
         csv_file = os.path.join(output_dir, "snp_summary.csv")
         output_file = os.path.join(output_dir, "heatmap_informativeness.png")
 
-        df = pd.read_csv(csv_file)
-
-        prop_cols = [col for col in df.columns if col.startswith("Prop_") and col != "Avg_Prop_Informative_SNPs"]
-        if not prop_cols:
-            print("No proportion columns found in the dataset.")
-            return
-
-        heatmap_data = df.set_index("Locus")[prop_cols]
-
-        if "Avg_Prop_Informative_SNPs" in df.columns:
-            sorted_loci = df.sort_values("Avg_Prop_Informative_SNPs", ascending=False)["Locus"]
-            heatmap_data = heatmap_data.loc[sorted_loci]
-
-        plt.figure(figsize=(12, max(6, 0.3 * len(heatmap_data))))
-        sns.heatmap(heatmap_data, annot=False, cmap="YlOrRd", cbar_kws={'label': 'Proportion of Informative SNPs'})
-        plt.title("Informative SNP Proportions per Locus and Non-Target Species")
-        plt.xlabel("Non-Target Species")
-        plt.ylabel("Locus")
-        plt.tight_layout()
-        plt.savefig(output_file)
-        plt.close()
-
-        return output_file
+        return plot_informativeness_heatmap(csv_file, output_file)
 
     def plot_snp_density_lines(self, species_folder, top_n=5):
-        import os
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        import pandas as pd
-
+        """Generate SNP position distribution plots for top-ranked loci."""
         output_dir = os.path.join(self.output_dir, species_folder, "informative_loci")
         csv_file = os.path.join(output_dir, "snp_summary.csv")
         plot_dir = os.path.join(output_dir, "snp_density_plots")
-        os.makedirs(plot_dir, exist_ok=True)
 
-        df = pd.read_csv(csv_file)
-
-        if "Avg_Prop_Informative_SNPs" not in df.columns:
-            print("Missing ranking column 'Avg_Prop_Informative_SNPs'.")
-            return
-
-        top_loci = df.sort_values("Avg_Prop_Informative_SNPs", ascending=False).head(top_n)
-
-        prop_cols = [col for col in df.columns if col.startswith("SNP_Pos_")]
-
-        for _, row in top_loci.iterrows():
-            locus_name = row["Locus"]
-            plt.figure(figsize=(12, 3))
-
-            for col in prop_cols:
-                species = col.replace("SNP_Pos_", "")
-                if pd.isna(row[col]) or not row[col].strip():
-                    continue
-                try:
-                    positions = list(map(int, row[col].split(',')))
-                except ValueError:
-                    continue
-                sns.histplot(positions, bins=50, kde=False, label=species, element="step", fill=False)
-
-            plt.title(f"SNP Position Distribution - {locus_name}")
-            plt.xlabel("Alignment Position")
-            plt.ylabel("SNP Count")
-            plt.legend(title="Non-Target Species", loc="upper right", fontsize="small")
-            plt.tight_layout()
-            plot_path = os.path.join(plot_dir, f"snp_density_{locus_name.replace('.','_')}.png")
-            plt.savefig(plot_path)
-            plt.close()
-
-        print(f"SNP density plots saved to: {plot_dir}")
-        return plot_dir
+        return plot_snp_density_distribution(csv_file, plot_dir, top_n)
 
     def create_consensus_sequences(self, species_folder):
         IUPAC_CODES = {
@@ -1181,98 +1071,9 @@ class QuasiAlignmentStrategy():
                 species_dict[target_species] = non_target_species
 
         return species_dict
-        
-    @staticmethod
-    def manhattan_distance(point1, point2):
-        """
-        Calculate the Manhattan distance between two points.
 
-        :param point1: A list or tuple representing the coordinates of the first point.
-        :param point2: A list or tuple representing the coordinates of the second point.
-        :return: The Manhattan distance between the two points.
-        """
-        if len(point1) != len(point2):
-            raise ValueError("Both points must have the same number of dimensions")
+    # Similarity metrics moved to similarity_metrics.py module
 
-        distance = sum(abs(p1 - p2) for p1, p2 in zip(point1, point2))
-        return distance
-
-    @staticmethod
-    def cosine_similarity(vector_a, vector_b):
-        """
-        Calculates the cosine similarity between two vectors.
-
-        :param vector_a: A list or tuple representing the first vector.
-        :param vector_b: A list or tuple representing the second vector.
-        :return: The cosine similarity between vector_a and vector_b.
-        """
-        # Ensure inputs are lists or tuples
-        if not isinstance(vector_a, (list, tuple)) or not isinstance(vector_b, (list, tuple)):
-            raise TypeError("Input vectors must be lists or tuples.")
-        
-        # Convert to NumPy arrays
-        vector_a = np.array(vector_a)
-        vector_b = np.array(vector_b)
-        
-        # Calculate dot product and magnitudes
-        dot_product = np.dot(vector_a, vector_b)
-        magnitude_a = np.linalg.norm(vector_a)
-        magnitude_b = np.linalg.norm(vector_b)
-        
-        # Avoid division by zero
-        if magnitude_a == 0 or magnitude_b == 0:
-            return 0  # Return 0 for cosine similarity if either vector is zero
-        
-        # Compute cosine similarity
-        return dot_product / (magnitude_a * magnitude_b)
-    
-    @staticmethod 
-    def jaccard_similarity_with_frequencies(vector_a, vector_b):
-        """
-        Calculates the Jaccard similarity between two lists or tuples containing frequencies of individual items (e.g., p-mers).
-
-        :param list_a: A list or tuple representing the first vector.
-        :param list_b: A list or tuple representing the second vector.
-        :return: The Jaccard similarity between the two collections, accounting for frequencies.
-        """
-        # Convert lists to Counters to handle frequencies
-        counter_a = Counter(vector_a)
-        counter_b = Counter(vector_b)
-        
-        # Calculate intersection and union based on minimum and maximum frequencies
-        intersection = sum((min(counter_a[item], counter_b[item]) for item in counter_a if item in counter_b))
-        union = sum((max(counter_a[item], counter_b[item]) for item in set(counter_a) | set(counter_b)))
-        
-        # Avoid division by zero in case both counters are empty
-        if union == 0:
-            return 0
-        
-        # Compute Jaccard similarity with frequencies
-        return intersection / union
-    
-    @staticmethod
-    def calculate_weighted_minhash_similarity(frequency_vector_a, frequency_vector_b, num_perm=128):
-        """
-        Calculates the Weighted MinHash Jaccard similarity between two frequency vectors.
-
-        :param frequency_vector_a: A list or tuple representing the frequency of p-mers for the first vector.
-        :param frequency_vector_b: A list or tuple representing the frequency of p-mers for the second vector.
-        :param num_perm: The number of permutations (hash functions) for the MinHash.
-        :return: The Weighted MinHash Jaccard similarity between the two vectors.
-        """
-        if not isinstance(frequency_vector_a, (list, tuple)) or not isinstance(frequency_vector_b, (list, tuple)):
-            raise TypeError("Input vectors must be lists or tuples.")
-        
-        if len(frequency_vector_a) != len(frequency_vector_b):
-            raise ValueError("The two frequency vectors must be of the same length.")
-        
-        wmg = WeightedMinHashGenerator(len(frequency_vector_a), sample_size=num_perm)
-        
-        wm_a = wmg.minhash(frequency_vector_a)
-        wm_b = wmg.minhash(frequency_vector_b)
-        
-        return wm_a.jaccard(wm_b)
-    
     def run_prokka(self, input_dir=".", output_dir="output/prokka"):
         """
         Runs Prokka on all FASTA files in the specified input directory, saving results in a single output directory.
@@ -1710,27 +1511,8 @@ class QuasiAlignmentStrategy():
             frozenset(['A', 'C', 'G']): 'V', frozenset(['A', 'T', 'C', 'G']): 'N'
         }
         return iupac_dict[frozenset(base_counts.keys())]
-    
-    @staticmethod
-    def add_missing_keys_with_zero(dict1, dict2):
-        """
-        Adds keys that are present in dict1 but not in dict2 (and vice versa) to each dictionary with values set to zero.
-        
-        :param dict1: The first dictionary.
-        :param dict2: The second dictionary.
-        :return: Two dictionaries with added keys and values set to zero where keys were missing.
-        """
-        # Find keys unique to each dictionary
-        keys_in_dict1_not_in_dict2 = dict1.keys() - dict2.keys()
-        keys_in_dict2_not_in_dict1 = dict2.keys() - dict1.keys()
-        
-        # Add missing keys to each dictionary with values set to zero
-        for key in keys_in_dict1_not_in_dict2:
-            dict2[key] = 0
-        for key in keys_in_dict2_not_in_dict1:
-            dict1[key] = 0
-        
-        return dict1, dict2
+
+    # add_missing_keys_with_zero moved to similarity_metrics.py module
         
     def find_consensus_binding_regions(self, all_primers, window_size=10, threshold_proportion=0.5):
         """
@@ -2143,141 +1925,9 @@ class QuasiAlignmentStrategy():
         os.remove(primer3_output_file)
         
     # --- Internal Classes ---
-    
-    class Segment:
-        """
-        A class to represent an individual segment in a quasi-alignment. It includes information about the sequence ID, species, 
-        and the position of the segment within the sequence.
-        """
-        def __init__(self, seq_id: str, species_name: str, gene_name: str, start: int, length: int, sequence: str, p: int = 3):
-            """
-            Initialize a Segment object.
+    # Segment and QuasiAlignment classes moved to data_structures.py module
 
-            :param seq_id: The ID of the sequence from which the segment comes.
-            :param species_name: The species of the sequence.
-            :param gene_name: The gene region of the sequence.
-            :param start: The starting position of the segment within the sequence.
-            :param length: The length of the segment within the sequence.
-            """
-            self.seq_id = seq_id
-            self.species_name = species_name
-            self.gene_name = gene_name
-            self.start = start      # 0-indexed
-            self.length = length
-            self.sequence = sequence
-            self.pmer_profile = self.get_pmer_composition(self, p)
-            
-        def get_segment(self, sequence):
-            """Returns the segment of the sequence based on start and length."""
-            end = self.start + self.length
-            return sequence[self.start:end]
-
-        def get_pmer_composition(self, segment, p):
-            """
-            Takes a Segment object and computes the p-mer composition of the segment.
-            The output is a dictionary where keys are only the p-mers present in the segment's sequence, and values are their counts.
-            P-mers are stored in uppercase.
-
-            :param segment: A Segment object containing the start and length information.
-            :param p: The length of the p-mer (substring).
-            :return: A dictionary with present p-mers as keys and their counts as values.
-            """
-            sequence = segment.sequence.upper()  # Convert the entire sequence to uppercase
-            pmer_dict = {}
-
-            # Loop through the sequence and extract p-mers
-            for i in range(len(sequence) - p + 1):  # Ensure we don't go beyond the sequence
-                pmer = sequence[i:i + p]
-                
-                # Add or update the count of the p-mer in the dictionary
-                if pmer in pmer_dict:
-                    pmer_dict[pmer] += 1
-                else:
-                    pmer_dict[pmer] = 1
-            
-            return pmer_dict
-        
-        def get_distance(self, other_segment, distance_func):
-            """
-            Calculates the distance between this segment and another segment using a specified distance function.
-            
-            :param other_segment: The other Segment object to calculate the distance to.
-            :param distance_func: A function that takes two lists (or tuples) as input and returns the distance between them.
-            :return: The distance between the two p-mer profiles.
-            """
-            if not callable(distance_func):
-                raise ValueError("distance_func must be a callable function")
-            
-            aligned_profile_self, aligned_profile_other = QuasiAlignmentStrategy.add_missing_keys_with_zero(self.pmer_profile, other_segment.pmer_profile)
-            
-            profile_values_self = tuple(aligned_profile_self.values())
-            profile_values_other = tuple(aligned_profile_other.values())
-            
-            # Calculate and return the distance using the specified distance function
-            return distance_func(profile_values_self, profile_values_other)
-
-        def __repr__(self):
-            return f"Segment(seq_id={self.seq_id}, species={self.species}, start={self.start}, end={self.end})"
-            
-    class QuasiAlignment:
-        """
-        A class to represent a quasi-alignment that contains multiple segments.
-        Each segment is associated with a sequence from a particular species.
-        """
-        def __init__(self, cluster_id: str):
-            """
-            Initialize a QuasiAlignment object.
-
-            :param cluster_id: A unique identifier for the quasi-alignment cluster.
-            """
-            self.cluster_id = cluster_id
-            self.segments = []
-            self.medoid = None
-
-        def add_segment(self, new_segment: "QuasiAlignmentStrategy.Segment"):
-            """
-            Adds a new Segment to the quasi-alignment and recalculates the medoid.
-            The medoid is the segment with the smallest average distance to all other segments.
-            
-            :param new_segment: Segment object to be added to the quasi-alignment.
-            """
-            # Add the new segment to the list
-            self.segments.append(new_segment)
-            
-            # Recalculate the medoid if there is more than one segment
-            if len(self.segments) > 1:
-                # Calculate the average distance of each segment to all others
-                min_avg_distance = float('inf')
-                new_medoid = None
-
-                for segment in self.segments:
-                    distances = [segment.get_distance(other, QuasiAlignmentStrategy.manhattan_distance) for other in self.segments if other != segment]
-                    avg_distance = np.mean(distances)
-                    
-                    # Update the medoid if a smaller average distance is found
-                    if avg_distance < min_avg_distance:
-                        min_avg_distance = avg_distance
-                        new_medoid = segment
-
-                # Set the new medoid
-                self.medoid = new_medoid
-            else:
-                # If only one segment, it's the medoid by default
-                self.medoid = new_segment
-
-        def get_segments_by_species(self, species: str):
-            """
-            Get all segments that belong to a specific species.
-
-            :param species: The species to filter segments by.
-            :return: A list of segments that belong to the specified species.
-            """
-            return [segment for segment in self.segments if segment.species_name == species]
-            
     # --- Public Methods ---
-            
-    def __repr__(self):
-        return f"QuasiAlignment(cluster_id={self.cluster_id}, segments={self.segments}, medoid={self.medoid})"
 
     def __init__(self, species_dict_file, primer_parameters_file):
         self.species_dict = self.parse_species_csv(species_dict_file)
@@ -2319,7 +1969,19 @@ class QuasiAlignmentStrategy():
   
         
 if __name__ == "__main__":
-    config = ConfigLoader.load("config.yaml")
+    parser = argparse.ArgumentParser(
+        description="PRISTINE: PRimer-based Identification Suite Targeting Informative Nucleotide Elements"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the configuration YAML file (default: config.yaml in current directory)"
+    )
+    args = parser.parse_args()
+
+    # Load configuration from the specified path
+    config = ConfigLoader.load(args.config)
     runner = MSAStrategy(config)
     runner.run()
 

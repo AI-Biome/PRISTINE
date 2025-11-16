@@ -6,9 +6,10 @@ This pipeline is distributed as a self-contained [Apptainer](https://apptainer.o
 
 To use the pipeline, you will need to have **Apptainer** installed on your system. Installation instructions are available on the [Apptainer documentation site](https://apptainer.org/docs/).
 
-Once Apptainer is installed, no further setup is required. Simply download the pipeline container available at https://nextcloud.uni-greifswald.de/index.php/s/GGWMXpJEYkQpCxG and run the pipeline using:
+Once Apptainer is installed, no further setup is required. Simply download the pipeline container available at https://nextcloud.uni-greifswald.de/index.php/s/GGWMXpJEYkQpCxG, make it executable, and run the pipeline using:
 
 ```bash
+chmod +x PRISTINE.sif
 ./PRISTINE.sif
 ```
 
@@ -23,7 +24,12 @@ To run the pipeline, you need:
 
 ### Configuration File
 
-The file `config.yaml` must be placed in the **same directory as the container** (`PRISTINE.sif`). It defines all global parameters, paths, and settings required for the analysis (for details, see below).
+The file `config.yaml` must be placed in the **same directory where you run the container** (`PRISTINE.sif`). It defines all global parameters, paths, and settings required for the analysis (for details, see below).
+
+**Note:** By default, the pipeline looks for `config.yaml` in the current working directory. You can specify a different location using:
+```bash
+./PRISTINE.sif --config /path/to/your/config.yaml
+```
 
 ## Quick Start with Toy Dataset
 
@@ -36,11 +42,52 @@ To quickly test the pipeline:
 
 1. **Download the `toy_dataset/` directory**
 2. **Place the Apptainer container** (`PRISTINE.sif`) inside the `toy_dataset/` folder
-3. From within the `toy_dataset/` directory, run:
+3. **Make the container executable** (if not already):
+   ```bash
+   chmod +x PRISTINE.sif
+   ```
+4. From within the `toy_dataset/` directory, run:
+   ```bash
+   ./PRISTINE.sif
+   ```
+
+---
+
+## Development: Running with Modified Source Code
+
+If you're developing or testing modifications to the PRISTINE source code, you can run the container with bind mounts to override the built-in Python modules without rebuilding the entire container.
+
+### Option 1: Using the Wrapper Script
+
+A convenience wrapper script is provided that automatically binds the updated modules:
 
 ```bash
-./PRISTINE.sif
+cd PRISTINE/toy_dataset
+/path/to/run_pristine_updated.sh
 ```
+
+The wrapper script supports all the same arguments as the main pipeline:
+```bash
+/path/to/run_pristine_updated.sh --config /path/to/config.yaml
+```
+
+### Option 2: Direct Container Execution with Bind Mounts
+
+For manual control, you can use Singularity/Apptainer bind mounts directly:
+
+```bash
+cd PRISTINE/toy_dataset
+singularity exec \
+  --bind /path/to/PRISTINE/PRISTINE_essentials.py:/opt/PRISTINE_essentials.py \
+  --bind /path/to/PRISTINE/config.py:/opt/config.py \
+  /path/to/PRISTINE.sif \
+  bash -c 'source /opt/conda/etc/profile.d/conda.sh && conda activate primer_design_tool_full && python3 /opt/PRISTINE_essentials.py'
+```
+
+Replace `/path/to/` with the actual paths to your modified source files and container.
+
+**Note:** This approach is intended for development and testing only. For production use, rebuild the container with the updated source code.
+
 ---
 
 ## Pipeline overview
