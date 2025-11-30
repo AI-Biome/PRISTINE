@@ -850,6 +850,132 @@ class MSAStrategy:
         summary_df.to_csv(summary_csv, index=False)
 
         return summary_df
+
+    def validate_primers_obipcr(self, species_folder):
+        """
+        For each primer pair in primer_design_summary.csv, run obipcr on the
+        validation database defined in the config (self.config.validation.database).
+        """
+
+        validation_cfg = self.config.validation
+
+        if not getattr(validation_cfg, "perform", False):
+            print("[obipcr validation] Validation.perform is False; skipping obipcr validation.")
+            return None
+
+        db_path = validation_cfg.database
+        if db_path is None or str(db_path).strip() == "":
+            raise ValueError("[obipcr validation] validation.database is not set in the config.")
+
+        if os.path.isdir(db_path):
+            db_files = sorted(glob.glob(os.path.join(db_path, "*")))
+        else:
+            db_files = sorted(glob.glob(db_path))
+
+        if not db_files:
+            raise FileNotFoundError(
+                f"[obipcr validation] No input files found for validation.database={db_path}. "
+                "Make sure this points to a FASTA file or directory."
+            )
+
+        species_outdir = os.path.join(self.output_dir, species_folder)
+
+        primer_dir = os.path.join(species_outdir, "primers")
+        primer_csv = os.path.join(primer_dir, "primer_design_summary.csv")
+
+        if not os.path.exists(primer_csv):
+            raise FileNotFoundError(f"[obipcr validation] Primer summary not found: {primer_csv}")
+
+        obipcr_outdir = os.path.join(primer_dir, "validation_obipcr")
+        os.makedirs(obipcr_outdir, exist_ok=True)
+
+        primer_df = pd.read_csv(primer_csv)
+
+        required_cols = {"Locus", "LEFT_PRIMER", "RIGHT_PRIMER", "PRODUCT_SIZE"}
+        missing = required_cols - set(primer_df.columns)
+        if missing:
+            raise ValueError(f"[obipcr validation] primer_design_summary.csv missing columns: {missing}")
+
+        run_summary = []
+
+        for _, row in primer_df.iterrows():
+            locus = row["Locus"]
+            left_primer = row["LEFT_PRIMER"]
+            right_primer = row["RIGHT_PRIMER"]
+            product_size = row["PRODUCT_SIZE"]
+
+            if pd.isna(left_primer) or pd.isna(right_primer):
+                print(f"[obipcr validation] Skipping {locus}: missing primer sequence.")
+                continue
+
+            try:
+                product_size = int(product_size)
+            except (TypeError, ValueError):
+                print(f"[obipcr validation] {locus}: invalid PRODUCT_SIZE, skipping.")
+                continue
+
+            internal_max_len = product_size - len(left_primer) - len(right_primer)
+            if internal_max_len <= 0:
+                print(f"[obipcr validation] {locus}: internal_max_len <= 0, skipping.")
+                continue
+
+            internal_min_len = max(1, int(0.5 * internal_max_len))
+
+            amplicon_fasta = os.path.join(obipcr_outdir, f"{locus}_validation_amplicons.fasta")
+
+            cmd = [
+                "obipcr",
+                "-l", str(internal_min_len),
+                "-L", str(internal_max_len),
+                "--forward", str(left_primer),
+                "--reverse", str(right_primer),
+                "--no-order",
+            ] + db_files
+
+            try:
+                with open(amplicon_fasta, "w") as out_f:
+                    result = subprocess.run(
+                        cmd,
+                        stdout=out_f,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "[obipcr validation] obipcr executable not found. "
+                    "Make sure it is installed and in your PATH."
+                )
+
+            success = (result.returncode == 0)
+
+            if not success:
+                print(f"[obipcr validation] {locus}: obipcr failed with code {result.returncode}")
+                if result.stderr:
+                    print(f"[obipcr validation] stderr for {locus}:\n{result.stderr}")
+
+            try:
+                amplicon_size = os.path.getsize(amplicon_fasta)
+            except OSError:
+                amplicon_size = 0
+
+            has_amplicons = success and (amplicon_size > 0)
+
+            run_summary.append({
+                "Locus": locus,
+                "Validation_DB": db_path,
+                "Amplicon_FASTA": amplicon_fasta if has_amplicons else None,
+                "Has_Amplicons": has_amplicons,
+                "obipcr_returncode": result.returncode,
+                "obipcr_stderr": result.stderr.strip() if result.stderr else "",
+            })
+
+        summary_df = pd.DataFrame(run_summary)
+
+        summary_csv = os.path.join(obipcr_outdir, "obipcr_validation_summary.csv")
+        summary_df.to_csv(summary_csv, index=False)
+
+        return summary_df
         
     def convert_primer_csv_to_ecopcr(self, input_csv, output_txt):
         df = pd.read_csv(input_csv)
@@ -1264,6 +1390,7 @@ class MSAStrategy:
                 self.create_consensus_sequences(species)
                 self.design_primers_from_snp(species)
                 self.run_obipcr(species)
+                self.validate_primers_obipcr(species)
 
             except Exception as e:
                 print(f"Error while processing {species}: {e}")
