@@ -450,7 +450,10 @@ class MSAStrategy:
 
         df = pd.read_csv(csv_file)
 
-        prop_cols = [col for col in df.columns if col.startswith("Prop_") and col != "Avg_Prop_Informative_SNPs"]
+        prop_cols = [
+            col for col in df.columns
+            if col.startswith("Prop_") and col != "Avg_Prop_Informative_SNPs"
+        ]
         if not prop_cols:
             print("No proportion columns found in the dataset.")
             return
@@ -458,11 +461,27 @@ class MSAStrategy:
         heatmap_data = df.set_index("Locus")[prop_cols]
 
         if "Avg_Prop_Informative_SNPs" in df.columns:
-            sorted_loci = df.sort_values("Avg_Prop_Informative_SNPs", ascending=False)["Locus"]
+            sorted_loci = df.sort_values(
+                "Avg_Prop_Informative_SNPs", ascending=False
+            )["Locus"]
             heatmap_data = heatmap_data.loc[sorted_loci]
 
-        plt.figure(figsize=(12, max(6, 0.3 * len(heatmap_data))))
-        sns.heatmap(heatmap_data, annot=False, cmap="YlOrRd", cbar_kws={'label': 'Proportion of Informative SNPs'})
+        n_loci = len(heatmap_data)
+        base_height_per_row = 0.3
+        min_height = 6
+        max_height = 60
+
+        fig_height = base_height_per_row * n_loci
+        fig_height = max(min_height, fig_height)
+        fig_height = min(max_height, fig_height)
+
+        plt.figure(figsize=(12, fig_height))
+        sns.heatmap(
+            heatmap_data,
+            annot=False,
+            cmap="YlOrRd",
+            cbar_kws={'label': 'Proportion of Informative SNPs'}
+        )
         plt.title("Informative SNP Proportions per Locus and Non-Target Species")
         plt.xlabel("Non-Target Species")
         plt.ylabel("Locus")
