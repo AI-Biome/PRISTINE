@@ -751,6 +751,106 @@ class MSAStrategy:
 
         return primer_df
         
+    def run_obipcr(self, species_folder):
+        """
+        For each primer pair in primer_design_summary.csv, run obipcr on the
+        corresponding locus alignment from panaroo and create in silico amplicons.
+        """
+
+        species_outdir = os.path.join(self.output_dir, species_folder)
+
+        primer_dir = os.path.join(species_outdir, "primers")
+        primer_csv = os.path.join(primer_dir, "primer_design_summary.csv")
+
+        if not os.path.exists(primer_csv):
+            raise FileNotFoundError(f"Primer summary not found: {primer_csv}")
+
+        panaroo_aligned_dir = os.path.join(
+            species_outdir,
+            "panaroo_output",
+            "unaligned_gene_sequences",
+            "filtered_sequences",
+            "aligned",
+        )
+
+        if not os.path.isdir(panaroo_aligned_dir):
+            raise FileNotFoundError(f"Panaroo alignment dir not found: {panaroo_aligned_dir}")
+
+        obipcr_outdir = os.path.join(primer_dir, "amplicons")
+        os.makedirs(obipcr_outdir, exist_ok=True)
+
+        primer_df = pd.read_csv(primer_csv)
+
+        required_cols = {"Locus", "LEFT_PRIMER", "RIGHT_PRIMER", "PRODUCT_SIZE"}
+        missing = required_cols - set(primer_df.columns)
+        if missing:
+            raise ValueError(f"primer_design_summary.csv missing columns: {missing}")
+
+        run_summary = []
+
+        for _, row in primer_df.iterrows():
+            locus = row["Locus"]
+            left_primer = row["LEFT_PRIMER"]
+            right_primer = row["RIGHT_PRIMER"]
+            product_size = row["PRODUCT_SIZE"]
+
+            if pd.isna(left_primer) or pd.isna(right_primer):
+                print(f"[obipcr] Skipping {locus}: missing primer sequence.")
+                continue
+
+            max_len = int(product_size)
+            
+            locus_fasta = os.path.join(panaroo_aligned_dir, f"{locus}")
+            if not os.path.exists(locus_fasta):
+                print(f"[obipcr] Skipping {locus}: alignment FASTA not found at {locus_fasta}")
+                continue
+
+            amplicon_fasta = os.path.join(obipcr_outdir, f"{locus}_amplicons.fasta")
+
+            cmd = [
+                "obipcr",
+                "--forward", str(left_primer),
+                "--reverse", str(right_primer),
+                "--max-length", str(max_len),
+                "--fasta", locus_fasta,
+            ]
+
+            try:
+                with open(amplicon_fasta, "w") as out_f:
+                    result = subprocess.run(
+                        cmd,
+                        stdout=out_f,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "obipcr executable not found. "
+                    "Make sure it is installed and in your PATH."
+                )
+
+            success = (result.returncode == 0)
+
+            if not success:
+                print(f"[obipcr] {locus}: obipcr failed with code {result.returncode}")
+                if result.stderr:
+                    print(f"[obipcr] stderr for {locus}:\n{result.stderr}")
+
+            run_summary.append({
+                "Locus": locus,
+                "Amplicon_FASTA": amplicon_fasta if success else None,
+                "obipcr_returncode": result.returncode,
+                "obipcr_stderr": result.stderr.strip() if result.stderr else "",
+            })
+
+        summary_df = pd.DataFrame(run_summary)
+
+        summary_csv = os.path.join(obipcr_outdir, "obipcr_run_summary.csv")
+        summary_df.to_csv(summary_csv, index=False)
+
+        return summary_df
+        
     def convert_primer_csv_to_ecopcr(self, input_csv, output_txt):
         df = pd.read_csv(input_csv)
         with open(output_txt, "w") as f:
@@ -1163,6 +1263,7 @@ class MSAStrategy:
                 self.plot_snp_density_lines(species)
                 self.create_consensus_sequences(species)
                 self.design_primers_from_snp(species)
+                self.run_obipcr(species)
 
             except Exception as e:
                 print(f"Error while processing {species}: {e}")
