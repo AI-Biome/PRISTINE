@@ -8,11 +8,12 @@ From: continuumio/miniconda3:24.4.0-0
 
     /opt/conda/bin/conda create -y -n PRISTINE -c conda-forge -c bioconda \
         python=3.11 \
-        prokka \
-        panaroo \
+        prokka=1.14.6 \
+        panaroo=1.5.2 \
         mafft \
         clustalo \
         prank \
+        perl-xml-simple \
         pandas \
         numpy \
         biopython \
