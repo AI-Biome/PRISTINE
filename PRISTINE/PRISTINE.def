@@ -1,0 +1,39 @@
+Bootstrap: docker
+From: continuumio/miniconda3:24.4.0-0
+
+%post
+    apt-get update && apt-get install -y \
+        procps \
+        && rm -rf /var/lib/apt/lists/*
+
+    /opt/conda/bin/conda create -y -n PRISTINE -c conda-forge -c bioconda \
+        python=3.11 \
+        prokka \
+        panaroo \
+        mafft \
+        clustalo \
+        prank \
+        pandas \
+        numpy \
+        biopython \
+        seaborn \
+        matplotlib \
+        pyyaml \
+        primer3-py \
+        datasketch
+
+    /opt/conda/bin/conda clean -afy
+
+%environment
+    export PATH=/opt/conda/envs/PRISTINE/bin:/opt/conda/bin:$PATH
+    export CONDA_DEFAULT_ENV=PRISTINE
+
+%files
+    PRISTINE_essentials.py /opt/project/PRISTINE_essentials.py
+
+%runscript
+    #!/bin/bash
+
+    export PATH=/opt/conda/envs/PRISTINE/bin:/opt/conda/bin:$PATH
+
+    exec python /opt/project/PRISTINE_essentials.py
