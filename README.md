@@ -6,10 +6,11 @@ This pipeline is distributed as a self-contained [Apptainer](https://apptainer.o
 
 To use the pipeline, you will need to have **Apptainer** installed on your system. Installation instructions are available on the [Apptainer documentation site](https://apptainer.org/docs/).
 
-Once Apptainer is installed, no further setup is required. Simply download the pipeline container available at https://nextcloud.uni-greifswald.de/index.php/s/GGWMXpJEYkQpCxG and run the pipeline using:
+Once Apptainer is installed, no further setup is required. Simply download the pipeline container and run it with the following commands (it requires ca. 1.8 GB of disk space):
 
 ```bash
-./PRISTINE.sif
+apptainer pull library://jack2knife/pristine/pristine:latest
+./pristine-latest.sif
 ```
 
 This single .sif file encapsulates the entire environment, ensuring consistent and reproducible results across different systems.
