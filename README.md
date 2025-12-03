@@ -6,7 +6,7 @@ This pipeline is distributed as a self-contained [Apptainer](https://apptainer.o
 
 To use the pipeline, you will need to have **Apptainer** installed on your system. Installation instructions are available on the [Apptainer documentation site](https://apptainer.org/docs/).
 
-Once Apptainer is installed, no further setup is required. Simply download the pipeline container with this command (it requires ca. 1.8 GB of disk space)
+Once Apptainer is installed, no further setup is required. Simply download the pipeline container with this command (it requires ca. 2.5 GB of disk space)
 
 ```bash
 apptainer pull library://jack2knife/pristine/pristine:latest
