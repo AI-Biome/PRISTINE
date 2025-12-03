@@ -1149,6 +1149,7 @@ class MSAStrategy:
                 self.design_primers_from_snp(species)
                 self.run_obipcr(species)
                 self.validate_primers_obipcr(species)
+                self.validate_primers_pblat(species)
 
             except Exception as e:
                 print(f"Error while processing {species}: {e}")
