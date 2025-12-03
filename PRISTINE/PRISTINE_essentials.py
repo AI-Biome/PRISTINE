@@ -976,7 +976,101 @@ class MSAStrategy:
         summary_df.to_csv(summary_csv, index=False)
 
         return summary_df
-        
+
+    def validate_primers_pblat(self, species_folder: str):
+        validation_cfg = self.config.validation
+        if not getattr(validation_cfg, "perform", False):
+            print("[pblat validation] validation.perform is False; skipping pblat validation.")
+            return None
+
+        db_path = validation_cfg.database
+        if not db_path or str(db_path).strip() == "":
+            raise ValueError("[pblat validation] validation.database is not set in the config.")
+        if not os.path.exists(db_path):
+            raise FileNotFoundError(f"[pblat validation] Database file not found: {db_path}")
+
+        species_outdir = os.path.join(self.output_dir, species_folder)
+        primer_dir = os.path.join(species_outdir, "primers")
+        obipcr_dir = os.path.join(primer_dir, "validation_obipcr")
+        if not os.path.isdir(obipcr_dir):
+            raise FileNotFoundError(f"[pblat validation] obipcr output dir not found: {obipcr_dir}")
+
+        amplicon_files = sorted(glob.glob(os.path.join(obipcr_dir, "*_validation_amplicons.fasta")))
+        if not amplicon_files:
+            print("[pblat validation] No *_validation_amplicons.fasta files found; nothing to run pblat on.")
+            return None
+
+        pblat_outdir = os.path.join(primer_dir, "validation_pblat")
+        os.makedirs(pblat_outdir, exist_ok=True)
+
+        min_identity = getattr(validation_cfg, "pblat_min_identity", None)
+        threads = getattr(self, "pblat_threads", None)
+        if threads is None:
+            threads = getattr(self, "threads", None)
+
+        run_summary = []
+
+        for amp_fasta in amplicon_files:
+            basename = os.path.basename(amp_fasta)
+            locus = basename.replace("_validation_amplicons.fasta", "")
+            try:
+                if os.path.getsize(amp_fasta) == 0:
+                    print(f"[pblat validation] Skipping {locus}: amplicon file is empty.")
+                    run_summary.append({
+                        "Locus": locus,
+                        "Amplicon_FASTA": amp_fasta,
+                        "PSL_Output": None,
+                        "Has_Alignments": False,
+                        "pblat_returncode": None,
+                        "pblat_stderr": "Amplicon file is empty.",
+                    })
+                    continue
+            except OSError:
+                print(f"[pblat validation] Skipping {locus}: cannot stat amplicon file.")
+                continue
+
+            psl_out = os.path.join(pblat_outdir, f"{locus}_validation_pblat.psl")
+            cmd = ["pblat", db_path, amp_fasta]
+            if min_identity is not None:
+                cmd.append(f"-minIdentity={min_identity}")
+            if threads is not None:
+                cmd.append(f"-threads={int(threads)}")
+            cmd.append(psl_out)
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "[pblat validation] pblat executable not found. Make sure it is installed and in your PATH."
+                )
+
+            success = (result.returncode == 0)
+            try:
+                psl_size = os.path.getsize(psl_out)
+            except OSError:
+                psl_size = 0
+            has_alignments = success and (psl_size > 0)
+
+            run_summary.append({
+                "Locus": locus,
+                "Amplicon_FASTA": amp_fasta,
+                "PSL_Output": psl_out if has_alignments else None,
+                "Has_Alignments": has_alignments,
+                "pblat_returncode": result.returncode,
+                "pblat_stderr": result.stderr.strip() if result.stderr else "",
+            })
+
+        summary_df = pd.DataFrame(run_summary)
+        summary_csv = os.path.join(pblat_outdir, "pblat_validation_summary.csv")
+        summary_df.to_csv(summary_csv, index=False)
+
+        return summary_df
 
     # --- Internal Classes ---
     
