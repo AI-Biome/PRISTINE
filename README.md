@@ -6,11 +6,16 @@ This pipeline is distributed as a self-contained [Apptainer](https://apptainer.o
 
 To use the pipeline, you will need to have **Apptainer** installed on your system. Installation instructions are available on the [Apptainer documentation site](https://apptainer.org/docs/).
 
-Once Apptainer is installed, no further setup is required. Simply download the pipeline container and run it with the following commands (it requires ca. 1.8 GB of disk space):
+Once Apptainer is installed, no further setup is required. Simply download the pipeline container with this command (it requires ca. 1.8 GB of disk space)
 
 ```bash
 apptainer pull library://jack2knife/pristine/pristine:latest
-./pristine-latest.sif
+```
+
+and then run it from within the your project directory (see below for detailed instructions) with the following command:
+
+```back
+./pristine_latest.sif
 ```
 
 This single .sif file encapsulates the entire environment, ensuring consistent and reproducible results across different systems.
@@ -36,11 +41,11 @@ A toy dataset is provided in the `toy_dataset/` directory. It includes:
 To quickly test the pipeline:
 
 1. **Download the `toy_dataset/` directory**
-2. **Place the Apptainer container** (`PRISTINE.sif`) inside the `toy_dataset/` folder
+2. **Place the Apptainer container** (`pristine_latest.sif`) inside the `toy_dataset/` folder
 3. From within the `toy_dataset/` directory, run:
 
 ```bash
-./PRISTINE.sif
+./pristine_latest.sif
 ```
 ---
 
