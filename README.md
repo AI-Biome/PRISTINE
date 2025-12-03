@@ -12,7 +12,7 @@ Once Apptainer is installed, no further setup is required. Simply download the p
 apptainer pull library://jack2knife/pristine/pristine:latest
 ```
 
-and then run it from within the your project directory (see below for detailed instructions) with the following command:
+and then run it from within your project directory (see below for detailed instructions) with the following command:
 
 ```back
 ./pristine_latest.sif
