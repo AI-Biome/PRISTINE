@@ -177,27 +177,28 @@ class MSAStrategy:
 
         for item in os.listdir(root_dir):
             species_path = os.path.join(root_dir, item)
-            if os.path.isdir(species_path) and item != "non-targets":
-                nt_folder = os.path.join(species_path, "non-targets")
-                if os.path.isdir(nt_folder):
-                    species_set = {
-                        extract_species_name(f)
-                        for f in os.listdir(nt_folder)
-                        if os.path.isfile(os.path.join(nt_folder, f)) and os.path.splitext(f)[1] in valid_exts
-                    }
-                    non_target_dict[item] = sorted(species_set)
+            if not os.path.isdir(species_path) or item == "non-targets":
+                continue
+            nt_folder = os.path.join(species_path, "non-targets")
+            species_set = set()
+            if os.path.isdir(nt_folder):
+                for f in os.listdir(nt_folder):
+                    fpath = os.path.join(nt_folder, f)
+                    if os.path.isfile(fpath) and os.path.splitext(f)[1] in valid_exts:
+                        species_set.add(extract_species_name(f))
+            non_target_dict[item] = sorted(species_set)
 
         global_nt_folder = os.path.join(root_dir, "non-targets")
+        global_set = set()
         if os.path.isdir(global_nt_folder):
-            species_set = {
-                extract_species_name(f)
-                for f in os.listdir(global_nt_folder)
-                if os.path.isfile(os.path.join(global_nt_folder, f)) and os.path.splitext(f)[1] in valid_exts
-            }
-            non_target_dict["global"] = sorted(species_set)
+            for f in os.listdir(global_nt_folder):
+                fpath = os.path.join(global_nt_folder, f)
+                if os.path.isfile(fpath) and os.path.splitext(f)[1] in valid_exts:
+                    global_set.add(extract_species_name(f))
+        non_target_dict["global"] = sorted(global_set)
 
         return non_target_dict
-    
+
     def run_prokka(self, species_folder):
         output_dir = os.path.join(self.output_dir, species_folder, "prokka_output")
         os.makedirs(output_dir, exist_ok=True)
