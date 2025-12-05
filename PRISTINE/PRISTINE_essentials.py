@@ -559,6 +559,11 @@ class MSAStrategy:
                 avg_prop_int_per_target[t] = pd.Series(vals).mean() if vals else 0
             avg_prop_int_global = pd.Series(avg_prop_int_per_target.values()).mean() if avg_prop_int_per_target else 0
 
+            if nontarget_species_set:
+                combined_score = 0.5 * (avg_prop_ext + avg_prop_int_global)
+            else:
+                combined_score = avg_prop_int_global
+
             target_lens = [len(seq) for sp, is_target, seq in sequences if is_target]
             nontarget_lens = [len(seq) for sp, is_target, seq in sequences if not is_target]
             med_target_len = pd.Series(target_lens).median() if target_lens else 0
@@ -569,6 +574,7 @@ class MSAStrategy:
                 "Locus": file,
                 "Avg_Prop_Informative_SNPs_External": avg_prop_ext,
                 "Avg_Prop_Informative_SNPs_Internal": avg_prop_int_global,
+                "Combined_Informativeness_Score": combined_score,
                 "Med_Target_Len": med_target_len,
                 "Med_NonTarget_Len": med_nontarget_len,
                 "Len_Diff": len_diff,
@@ -607,12 +613,12 @@ class MSAStrategy:
 
             summary.append(record)
 
-            if avg_prop_ext >= self.snp_avg_prop_threshold:
+            if combined_score >= self.snp_avg_prop_threshold:
                 shutil.copy(path, output_dir)
 
         df = pd.DataFrame(summary)
         if not df.empty:
-            df.sort_values(by="Avg_Prop_Informative_SNPs_External", ascending=False, inplace=True)
+            df.sort_values(by="Combined_Informativeness_Score", ascending=False, inplace=True)
         df.to_csv(output_csv, index=False)
         return df
 
