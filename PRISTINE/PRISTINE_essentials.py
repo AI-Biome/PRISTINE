@@ -177,7 +177,7 @@ class MSAStrategy:
 
         for item in os.listdir(root_dir):
             species_path = os.path.join(root_dir, item)
-            if os.path.isdir(species_path) and "_" in item:
+            if os.path.isdir(species_path) and item != "non-targets":
                 nt_folder = os.path.join(species_path, "non-targets")
                 if os.path.isdir(nt_folder):
                     species_set = {
