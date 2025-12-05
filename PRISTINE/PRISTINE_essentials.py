@@ -111,7 +111,6 @@ class MSAStrategy:
 
     def standardize_fasta_headers(self):
         root_dir = self.input_dir
-
         valid_exts = {".fasta", ".fas", ".fa"}
 
         def is_fasta_file(filename):
@@ -122,13 +121,16 @@ class MSAStrategy:
             match = re.match(r"(.+)_\d+$", name)
             return match.group(1) if match else name
 
-        def fix_fasta_headers(filepath, species_name):
+        def fix_fasta_headers(filepath, species_name, group_id=None):
             lines = []
             with open(filepath, "r") as f:
                 for line in f:
                     if line.startswith(">"):
                         header = line[1:].strip()
-                        new_header = f">{species_name}_{header}"
+                        if group_id is not None:
+                            new_header = f">{group_id}:{species_name}_{header}"
+                        else:
+                            new_header = f">{species_name}_{header}"
                         lines.append(new_header + "\n")
                     else:
                         lines.append(line)
@@ -139,15 +141,19 @@ class MSAStrategy:
             folder_path = os.path.join(root_dir, folder)
             if not os.path.isdir(folder_path):
                 continue
+            if folder == "non-targets":
+                continue
+            group_id = folder
             for subfolder in ["", "non-targets"]:
-                sub_path = os.path.join(folder_path, subfolder)
+                sub_path = os.path.join(folder_path, subfolder) if subfolder else folder_path
                 if not os.path.isdir(sub_path):
                     continue
+                is_target = (subfolder == "")
                 for file in os.listdir(sub_path):
                     if is_fasta_file(file):
                         filepath = os.path.join(sub_path, file)
                         species_name = extract_species_name(file)
-                        fix_fasta_headers(filepath, species_name)
+                        fix_fasta_headers(filepath, species_name, group_id if is_target else None)
 
         global_non_targets = os.path.join(root_dir, "non-targets")
         if os.path.isdir(global_non_targets):
@@ -155,7 +161,7 @@ class MSAStrategy:
                 if is_fasta_file(file):
                     filepath = os.path.join(global_non_targets, file)
                     species_name = extract_species_name(file)
-                    fix_fasta_headers(filepath, species_name)
+                    fix_fasta_headers(filepath, species_name, None)
 
     def build_non_target_dict(self):
         root_dir = self.input_dir
