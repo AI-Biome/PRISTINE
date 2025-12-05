@@ -456,6 +456,160 @@ class MSAStrategy:
         info = self.is_informative_site_by_species(group_column, "__GROUP__", species_set)
         return {sp: info.get(sp, False) for sp in nontarget_species_set}
 
+    def assess_loci_by_group(self, species_folder):
+        input_dir = os.path.join(self.output_dir, species_folder, "panaroo_output", "unaligned_gene_sequences", "filtered_sequences", "aligned")
+        output_dir = os.path.join(self.output_dir, species_folder, "informative_loci")
+        os.makedirs(output_dir, exist_ok=True)
+        output_csv = os.path.join(output_dir, "snp_summary.csv")
+
+        target_group_id = species_folder
+        summary = []
+
+        for file in os.listdir(input_dir):
+            if not file.endswith(".fasta") and not file.endswith(".fa"):
+                continue
+            path = os.path.join(input_dir, file)
+            try:
+                records = list(SeqIO.parse(path, "fasta"))
+                alignment = MultipleSeqAlignment(records)
+            except Exception:
+                continue
+
+            sequences = []
+            for rec in alignment:
+                parts = rec.id.split("_")
+                if len(parts) >= 2:
+                    token = parts[0] + "_" + parts[1]
+                else:
+                    token = parts[0]
+                if ":" in token:
+                    group_id, species_name = token.split(":", 1)
+                else:
+                    group_id, species_name = None, token
+                is_target = (group_id == target_group_id)
+                sequences.append((species_name, is_target, rec.seq))
+
+            if not sequences:
+                continue
+
+            target_species_set = {sp for sp, is_target, _ in sequences if is_target}
+            nontarget_species_set = {sp for sp, is_target, _ in sequences if not is_target}
+
+            if not target_species_set:
+                continue
+
+            seq_strings = [str(seq) for _, _, seq in sequences]
+            aln_len = len(seq_strings[0])
+            if any(len(s) != aln_len for s in seq_strings):
+                continue
+
+            columns = []
+            for pos in range(aln_len):
+                col = []
+                for (sp, _, _), s in zip(sequences, seq_strings):
+                    col.append((sp, s[pos]))
+                columns.append(col)
+
+            if not columns:
+                continue
+
+            total_positions = len(columns)
+
+            informative_counts_ext = {sp: 0 for sp in nontarget_species_set}
+            informative_positions_ext = {sp: [] for sp in nontarget_species_set}
+
+            internal_counts = {t: {o: 0 for o in target_species_set if o != t} for t in target_species_set}
+            internal_positions = {t: {o: [] for o in target_species_set if o != t} for t in target_species_set}
+
+            for pos, col in enumerate(columns):
+                if nontarget_species_set:
+                    info_ext = self.is_informative_site_group_external(col, target_species_set, nontarget_species_set)
+                    for sp, is_inf in info_ext.items():
+                        if is_inf:
+                            informative_counts_ext[sp] += 1
+                            informative_positions_ext[sp].append(pos)
+
+                target_col = [(sp, base) for sp, base in col if sp in target_species_set]
+                for t in target_species_set:
+                    info_int = self.is_informative_site_by_species(target_col, t, target_species_set)
+                    for o, is_inf in info_int.items():
+                        if is_inf and o in internal_counts[t]:
+                            internal_counts[t][o] += 1
+                            internal_positions[t][o].append(pos)
+
+            informative_props_ext = {sp: (informative_counts_ext[sp] / total_positions if total_positions > 0 else 0) for sp in informative_counts_ext}
+
+            prop_int_pairs = {}
+            for t in internal_counts:
+                prop_int_pairs[t] = {}
+                for o in internal_counts[t]:
+                    prop_int_pairs[t][o] = internal_counts[t][o] / total_positions if total_positions > 0 else 0
+
+            avg_prop_ext = pd.Series(informative_props_ext.values()).mean() if informative_props_ext else 0
+
+            avg_prop_int_per_target = {}
+            for t in prop_int_pairs:
+                vals = list(prop_int_pairs[t].values())
+                avg_prop_int_per_target[t] = pd.Series(vals).mean() if vals else 0
+            avg_prop_int_global = pd.Series(avg_prop_int_per_target.values()).mean() if avg_prop_int_per_target else 0
+
+            target_lens = [len(seq) for sp, is_target, seq in sequences if is_target]
+            nontarget_lens = [len(seq) for sp, is_target, seq in sequences if not is_target]
+            med_target_len = pd.Series(target_lens).median() if target_lens else 0
+            med_nontarget_len = pd.Series(nontarget_lens).median() if nontarget_lens else 0
+            len_diff = med_target_len - med_nontarget_len
+
+            record = {
+                "Locus": file,
+                "Avg_Prop_Informative_SNPs_External": avg_prop_ext,
+                "Avg_Prop_Informative_SNPs_Internal": avg_prop_int_global,
+                "Med_Target_Len": med_target_len,
+                "Med_NonTarget_Len": med_nontarget_len,
+                "Len_Diff": len_diff,
+            }
+
+            for sp in informative_props_ext:
+                record[f"Prop_External_{sp}"] = informative_props_ext[sp]
+                record[f"Abs_External_{sp}"] = informative_counts_ext[sp]
+                snp_pos_list = informative_positions_ext[sp]
+                record[f"SNP_Pos_External_{sp}"] = ",".join(map(str, snp_pos_list))
+                if len(snp_pos_list) >= 2:
+                    mean = np.mean(snp_pos_list)
+                    std = np.std(snp_pos_list)
+                    lower = max(0, int(mean - 2 * std))
+                    upper = min(total_positions - 1, int(mean + 2 * std))
+                    record[f"Core_Region_External_{sp}"] = f"{lower}-{upper}"
+                else:
+                    record[f"Core_Region_External_{sp}"] = ""
+
+            for t in internal_counts:
+                record[f"Avg_Prop_Informative_SNPs_Internal_{t}"] = avg_prop_int_per_target.get(t, 0)
+                for o in internal_counts[t]:
+                    key_prefix = f"{t}_vs_{o}"
+                    record[f"Prop_Internal_{key_prefix}"] = prop_int_pairs[t][o]
+                    record[f"Abs_Internal_{key_prefix}"] = internal_counts[t][o]
+                    snp_pos_list = internal_positions[t][o]
+                    record[f"SNP_Pos_Internal_{key_prefix}"] = ",".join(map(str, snp_pos_list))
+                    if len(snp_pos_list) >= 2:
+                        mean = np.mean(snp_pos_list)
+                        std = np.std(snp_pos_list)
+                        lower = max(0, int(mean - 2 * std))
+                        upper = min(total_positions - 1, int(mean + 2 * std))
+                        record[f"Core_Region_Internal_{key_prefix}"] = f"{lower}-{upper}"
+                    else:
+                        record[f"Core_Region_Internal_{key_prefix}"] = ""
+
+            summary.append(record)
+
+            if avg_prop_ext >= self.snp_avg_prop_threshold:
+                shutil.copy(path, output_dir)
+
+        df = pd.DataFrame(summary)
+        if not df.empty:
+            df.sort_values(by="Avg_Prop_Informative_SNPs_External", ascending=False, inplace=True)
+        df.to_csv(output_csv, index=False)
+        return df
+
     def plot_informativeness_heatmap(self, species_folder):
         output_dir = os.path.join(self.output_dir, species_folder, "informative_loci")
         csv_file = os.path.join(output_dir, "snp_summary.csv")
