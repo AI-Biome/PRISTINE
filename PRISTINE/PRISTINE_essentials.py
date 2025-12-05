@@ -443,6 +443,19 @@ class MSAStrategy:
 
         return df
 
+    def is_informative_site_group_external(self, column, target_species_set, nontarget_species_set):
+        group_column = []
+        for sp, base in column:
+            if sp in target_species_set:
+                group_column.append(("__GROUP__", base))
+            elif sp in nontarget_species_set:
+                group_column.append((sp, base))
+        if not group_column or not nontarget_species_set:
+            return {sp: False for sp in nontarget_species_set}
+        species_set = {"__GROUP__"} | set(nontarget_species_set)
+        info = self.is_informative_site_by_species(group_column, "__GROUP__", species_set)
+        return {sp: info.get(sp, False) for sp in nontarget_species_set}
+
     def plot_informativeness_heatmap(self, species_folder):
         output_dir = os.path.join(self.output_dir, species_folder, "informative_loci")
         csv_file = os.path.join(output_dir, "snp_summary.csv")
