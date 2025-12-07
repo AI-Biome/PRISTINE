@@ -128,9 +128,9 @@ class MSAStrategy:
                     if line.startswith(">"):
                         header = line[1:].strip()
                         if group_id is not None:
-                            new_header = f">{group_id}:{species_name}_{header}"
+                            new_header = f">{group_id}:{species_name}___{header}"
                         else:
-                            new_header = f">{species_name}_{header}"
+                            new_header = f">{species_name}___{header}"
                         lines.append(new_header + "\n")
                     else:
                         lines.append(line)
@@ -205,11 +205,11 @@ class MSAStrategy:
 
         def get_species_name_from_fasta(path):
             with open(path, "r") as f:
-                for line in f:
-                    if line.startswith(">"):
-                        header = line[1:].strip()
-                        token = header.split("_", 1)[0]
-                        return token
+            for line in f:
+                if line.startswith(">"):
+                    header = line[1:].strip()
+                    parts = header.split("___", 1)
+                    return parts[0]
             return os.path.splitext(os.path.basename(path))[0]
 
         for root, _, files in os.walk(self.input_dir):
