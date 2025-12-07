@@ -806,11 +806,11 @@ class MSAStrategy:
         window_size = self.snp_window_size
         top_n = self.snp_top_n
         min_snps = self.min_snps
-
         gap_tolerance = 20
 
         df = pd.read_csv(snp_summary_csv)
-        top_loci = df.sort_values("Avg_Prop_Informative_SNPs", ascending=False).head(top_n)
+        score_col = "Combined_Informativeness_Score" if "Combined_Informativeness_Score" in df.columns else "Avg_Prop_Informative_SNPs"
+        top_loci = df.sort_values(score_col, ascending=False).head(top_n)
 
         snp_pos_columns = [col for col in df.columns if col.startswith("SNP_Pos_")]
 
@@ -821,10 +821,10 @@ class MSAStrategy:
             target_windows = []
 
             for col in snp_pos_columns:
-                if pd.isna(row[col]):
+                if pd.isna(row.get(col)):
                     continue
                 try:
-                    snp_positions = sorted(set(map(int, row[col].split(','))))
+                    snp_positions = sorted(set(map(int, str(row[col]).split(","))))
                 except ValueError:
                     continue
 
@@ -886,10 +886,10 @@ class MSAStrategy:
             if region_span > max_product_size:
                 snp_positions = []
                 for col in snp_pos_columns:
-                    if pd.isna(row[col]):
+                    if pd.isna(row.get(col)):
                         continue
                     try:
-                        snp_positions.extend(map(int, row[col].split(',')))
+                        snp_positions.extend(map(int, str(row[col]).split(",")))
                     except ValueError:
                         continue
                 snp_positions = sorted(set(snp_positions))
@@ -907,11 +907,11 @@ class MSAStrategy:
 
             result = primer3.bindings.design_primers(
                 {
-                    'SEQUENCE_ID': locus_name,
-                    'SEQUENCE_TEMPLATE': seq,
-                    # 'SEQUENCE_TARGET': sequence_target,
+                    "SEQUENCE_ID": locus_name,
+                    "SEQUENCE_TEMPLATE": seq,
+                    # "SEQUENCE_TARGET": sequence_target,
                 },
-                self.primer3_global
+                self.primer3_global,
             )
 
             left_primer = result.get("PRIMER_LEFT_0_SEQUENCE")
@@ -920,27 +920,29 @@ class MSAStrategy:
             if left_primer and right_primer:
                 locus_fasta_path = os.path.join(output_dir, f"{locus_name}_primers.fasta")
                 with open(locus_fasta_path, "w") as f:
-                    f.write(f">{locus_name}_LEFT\\n{left_primer}\\n")
-                    f.write(f">{locus_name}_RIGHT\\n{right_primer}\\n")
+                    f.write(f">{locus_name}_LEFT\n{left_primer}\n")
+                    f.write(f">{locus_name}_RIGHT\n{right_primer}\n")
 
-                primer_results.append({
-                    "Locus": locus_name,
-                    "Num_Target_Regions": len(sequence_target) // 2,
-                    "LEFT_PRIMER": left_primer,
-                    "RIGHT_PRIMER": right_primer,
-                    "LEFT_TM": result.get("PRIMER_LEFT_0_TM"),
-                    "RIGHT_TM": result.get("PRIMER_RIGHT_0_TM"),
-                    "LEFT_GC": result.get("PRIMER_LEFT_0_GC_PERCENT"),
-                    "RIGHT_GC": result.get("PRIMER_RIGHT_0_GC_PERCENT"),
-                    "PRODUCT_SIZE": result.get("PRIMER_PAIR_0_PRODUCT_SIZE")
-                })
+                primer_results.append(
+                    {
+                        "Locus": locus_name,
+                        "Num_Target_Regions": len(sequence_target) // 2,
+                        "LEFT_PRIMER": left_primer,
+                        "RIGHT_PRIMER": right_primer,
+                        "LEFT_TM": result.get("PRIMER_LEFT_0_TM"),
+                        "RIGHT_TM": result.get("PRIMER_RIGHT_0_TM"),
+                        "LEFT_GC": result.get("PRIMER_LEFT_0_GC_PERCENT"),
+                        "RIGHT_GC": result.get("PRIMER_RIGHT_0_GC_PERCENT"),
+                        "PRODUCT_SIZE": result.get("PRIMER_PAIR_0_PRODUCT_SIZE"),
+                    }
+                )
 
         primer_df = pd.DataFrame(primer_results)
         output_path = os.path.join(output_dir, "primer_design_summary.csv")
         primer_df.to_csv(output_path, index=False)
 
         return primer_df
-        
+
     def run_obipcr(self, species_folder):
         """
         For each primer pair in primer_design_summary.csv, run obipcr on the
@@ -1332,7 +1334,7 @@ class MSAStrategy:
                 self.run_panaroo(species)
                 self.filter_unaligned_sequences(species)
                 self.run_alignment(species)
-                self.assess_loci_by_species(species)
+                self.assess_loci_by_group(species)
                 self.plot_informativeness_heatmap(species)
                 self.plot_snp_density_lines(species)
                 self.create_consensus_sequences(species)
