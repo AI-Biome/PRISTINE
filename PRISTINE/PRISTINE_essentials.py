@@ -203,22 +203,31 @@ class MSAStrategy:
         output_dir = os.path.join(self.output_dir, species_folder, "prokka_output")
         os.makedirs(output_dir, exist_ok=True)
 
+        def get_species_name_from_fasta(path):
+            with open(path, "r") as f:
+                for line in f:
+                    if line.startswith(">"):
+                        header = line[1:].strip()
+                        token = header.split("_", 1)[0]
+                        return token
+            return os.path.splitext(os.path.basename(path))[0]
+
         for root, _, files in os.walk(self.input_dir):
             for filename in files:
                 if filename.endswith(".fasta") or filename.endswith(".fa"):
                     entry_filepath = os.path.join(root, filename)
-                    species_name = os.path.splitext(filename)[0]
+                    species_name = get_species_name_from_fasta(entry_filepath)
 
                     prokka_cmd = [
-                        'prokka',
-                        '--kingdom', 'Bacteria',
-                        '--outdir', output_dir,
-                        '--prefix', species_name,
-                        '--cpus', str(self.max_cores),
-                        '--centre', 'X',
-                        '--compliant',
-                        '--force',
-                        entry_filepath
+                        "prokka",
+                        "--kingdom", "Bacteria",
+                        "--outdir", output_dir,
+                        "--prefix", species_name,
+                        "--cpus", str(self.max_cores),
+                        "--centre", "X",
+                        "--compliant",
+                        "--force",
+                        entry_filepath,
                     ]
 
                     print(f"Running Prokka for {filename} with command: {' '.join(prokka_cmd)}")
