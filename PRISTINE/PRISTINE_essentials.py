@@ -205,11 +205,11 @@ class MSAStrategy:
 
         def get_species_name_from_fasta(path):
             with open(path, "r") as f:
-            for line in f:
-                if line.startswith(">"):
-                    header = line[1:].strip()
-                    parts = header.split("___", 1)
-                    return parts[0]
+                for line in f:
+                    if line.startswith(">"):
+                        header = line[1:].strip()
+                        parts = header.split("___", 1)
+                        return parts[0]
             return os.path.splitext(os.path.basename(path))[0]
 
         for root, _, files in os.walk(self.input_dir):
