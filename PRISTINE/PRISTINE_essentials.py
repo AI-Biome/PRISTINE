@@ -118,8 +118,9 @@ class MSAStrategy:
 
         def extract_species_name(filename):
             name = os.path.splitext(filename)[0]
-            match = re.match(r"(.+)_\d+$", name)
-            return match.group(1) if match else name
+            # match = re.match(r"(.+)_\d+$", name)
+            # return match.group(1) if match else name
+            return name
 
         def fix_fasta_headers(filepath, species_name, group_id=None):
             lines = []
