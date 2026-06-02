@@ -20,6 +20,38 @@ and then run it from within your project directory (see below for detailed instr
 
 This single .sif file encapsulates the entire environment, ensuring consistent and reproducible results across different systems.
 
+### macOS
+
+Apptainer is not natively supported on macOS. Mac users can instead run PRISTINE using Docker.
+
+First, install [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/) and ensure that Docker is running. Then download or clone the PRISTINE repository and navigate to the project directory containing the `Dockerfile` (root directory).
+
+Build the Docker image:
+
+```bash
+docker build -t pristine .
+```
+
+Once the image has been built successfully, run PRISTINE with:
+
+```bash
+docker run --rm pristine
+```
+
+Additional command-line arguments can be passed directly to the container. For example:
+
+```bash
+docker run --rm pristine --help
+```
+
+If your analysis requires access to files stored on your computer, mount the current working directory into the container:
+
+```bash
+docker run --rm -v "$(pwd):/data" pristine
+```
+
+On Apple Silicon systems (M1/M2/M3/M4), Docker will automatically use the appropriate container architecture if a compatible image is available.
+
 ## Input
 
 To run the pipeline, you need:
