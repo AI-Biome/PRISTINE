@@ -41,7 +41,7 @@ RUN cd /opt && \
 
 # Copy PRISTINE
 
-COPY PRISTINE_essentials.py /opt/PRISTINE_essentials.py
+COPY PRISTINE/PRISTINE_essentials.py /opt/PRISTINE_essentials.py
 
 RUN chmod +x /opt/PRISTINE_essentials.py
 
