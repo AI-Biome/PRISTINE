@@ -43,18 +43,32 @@ usage: pristine [-h] [-c CONFIG] [-t THREADS] [-o OUTPUT] [--log-level {DEBUG,IN
 
 ### Containers
 
-A Docker image and an Apptainer definition are provided; both install the locked
-pixi environment.
+A ready-made image with the locked pixi environment is on Docker Hub as
+[`gaiusaugustus/pristine`](https://hub.docker.com/r/gaiusaugustus/pristine). No local
+installation is needed. Run it from the directory that holds your `config.yaml`.
+
+**Docker** (Linux, macOS, Windows). The project directory is mounted at `/data`;
+`--user` keeps output files owned by you.
 
 ```bash
-# Docker (also for macOS); mount the project directory at /data
-docker build -t pristine .
-docker run --rm -v "$(pwd):/data" pristine --config config.yaml
-
-# Apptainer / Singularity, built from the repository root
-apptainer build pristine.sif PRISTINE/PRISTINE.def
-./pristine.sif --config config.yaml
+docker pull gaiusaugustus/pristine:0.2.0
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v "$(pwd):/data" gaiusaugustus/pristine:0.2.0 --config config.yaml
 ```
+
+**Apptainer / Singularity** (HPC clusters). The current directory is mounted
+automatically.
+
+```bash
+apptainer pull pristine.sif docker://gaiusaugustus/pristine:0.2.0
+apptainer run pristine.sif --config config.yaml
+```
+
+The image is built for x86-64. On Apple Silicon Macs Docker runs it under emulation,
+which is slower but works.
+
+To build the image yourself from the repository root, use
+`docker build -t pristine .` or `apptainer build pristine.sif PRISTINE/PRISTINE.def`.
 
 ## Quick start with the toy dataset
 
@@ -64,9 +78,13 @@ and two *Yersinia pestis* genomes (non-targets) plus a ready `config.yaml`:
 ```bash
 cd PRISTINE/toy_dataset
 pixi run --manifest-path ../../pixi.toml pristine --config config.yaml
+
+# or, without installing anything, with the container
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v "$(pwd):/data" gaiusaugustus/pristine:0.2.0 --config config.yaml
 ```
 
-With 4 threads this takes well under a minute and writes `output/`.
+With 4 threads this takes one to two minutes and writes `output/`.
 
 ## Input
 
@@ -288,20 +306,20 @@ minimap2), `pseudoalign` (alignments from cs tags), `scoring`, `consensus`, `pri
 
 If you use PRISTINE, please also cite the tools it builds on.
 
-1. Li H. (2018). Minimap2: pairwise alignment for nucleotide sequences. *Bioinformatics* 34(18):3094-3100. https://doi.org/10.1093/bioinformatics/bty191
-2. Untergasser A. et al. (2012). Primer3: new capabilities and interfaces. *Nucleic Acids Research* 40(15):e115. https://doi.org/10.1093/nar/gks596
-3. Koressaar T., Remm M. (2007). Enhancements and modifications of primer design program Primer3. *Bioinformatics* 23(10):1289-1291. https://doi.org/10.1093/bioinformatics/btm091
-4. SantaLucia J. Jr. (1998). A unified view of polymer, dumbbell, and oligonucleotide DNA nearest-neighbor thermodynamics. *PNAS* 95(4):1460-1465. https://doi.org/10.1073/pnas.95.4.1460
-5. SantaLucia J. Jr., Hicks D. (2004). The thermodynamics of DNA structural motifs. *Annual Review of Biophysics and Biomolecular Structure* 33:415-440. https://doi.org/10.1146/annurev.biophys.32.110601.141800
-6. Katoh K., Standley D.M. (2013). MAFFT multiple sequence alignment software version 7: improvements in performance and usability. *Molecular Biology and Evolution* 30(4):772-780. https://doi.org/10.1093/molbev/mst010
-7. Camacho C. et al. (2009). BLAST+: architecture and applications. *BMC Bioinformatics* 10:421. https://doi.org/10.1186/1471-2105-10-421
-8. Zhang Z., Schwartz S., Wagner L., Miller W. (2000). A greedy algorithm for aligning DNA sequences. *Journal of Computational Biology* 7(1-2):203-214. https://doi.org/10.1089/10665270050081478
-9. Sayers E.W. et al. (2026). Database resources of the National Center for Biotechnology Information in 2026. *Nucleic Acids Research* 54(D1):D20-D27. https://doi.org/10.1093/nar/gkaf1060
-10. Cock P.J.A. et al. (2009). Biopython: freely available Python tools for computational molecular biology and bioinformatics. *Bioinformatics* 25(11):1422-1423. https://doi.org/10.1093/bioinformatics/btp163
-11. Harris C.R. et al. (2020). Array programming with NumPy. *Nature* 585(7825):357-362. https://doi.org/10.1038/s41586-020-2649-2
-12. McKinney W. (2010). Data Structures for Statistical Computing in Python. *Proceedings of the 9th Python in Science Conference (SciPy 2010)*. https://doi.org/10.25080/Majora-92bf1922-00a
-13. Hunter J.D. (2007). Matplotlib: A 2D Graphics Environment. *Computing in Science & Engineering* 9(3):90-95. https://doi.org/10.1109/MCSE.2007.55
-14. primer3-py: Python bindings for Primer3. https://github.com/libnano/primer3-py
+1. Li H. (2018). Minimap2: pairwise alignment for nucleotide sequences. *Bioinformatics* 34(18):3094-3100. <https://doi.org/10.1093/bioinformatics/bty191>
+2. Untergasser A. et al. (2012). Primer3: new capabilities and interfaces. *Nucleic Acids Research* 40(15):e115. <https://doi.org/10.1093/nar/gks596>
+3. Koressaar T., Remm M. (2007). Enhancements and modifications of primer design program Primer3. *Bioinformatics* 23(10):1289-1291. <https://doi.org/10.1093/bioinformatics/btm091>
+4. SantaLucia J. Jr. (1998). A unified view of polymer, dumbbell, and oligonucleotide DNA nearest-neighbor thermodynamics. *PNAS* 95(4):1460-1465. <https://doi.org/10.1073/pnas.95.4.1460>
+5. SantaLucia J. Jr., Hicks D. (2004). The thermodynamics of DNA structural motifs. *Annual Review of Biophysics and Biomolecular Structure* 33:415-440. <https://doi.org/10.1146/annurev.biophys.32.110601.141800>
+6. Katoh K., Standley D.M. (2013). MAFFT multiple sequence alignment software version 7: improvements in performance and usability. *Molecular Biology and Evolution* 30(4):772-780. <https://doi.org/10.1093/molbev/mst010>
+7. Camacho C. et al. (2009). BLAST+: architecture and applications. *BMC Bioinformatics* 10:421. <https://doi.org/10.1186/1471-2105-10-421>
+8. Zhang Z., Schwartz S., Wagner L., Miller W. (2000). A greedy algorithm for aligning DNA sequences. *Journal of Computational Biology* 7(1-2):203-214. <https://doi.org/10.1089/10665270050081478>
+9. Sayers E.W. et al. (2026). Database resources of the National Center for Biotechnology Information in 2026. *Nucleic Acids Research* 54(D1):D20-D27. <https://doi.org/10.1093/nar/gkaf1060>
+10. Cock P.J.A. et al. (2009). Biopython: freely available Python tools for computational molecular biology and bioinformatics. *Bioinformatics* 25(11):1422-1423. <https://doi.org/10.1093/bioinformatics/btp163>
+11. Harris C.R. et al. (2020). Array programming with NumPy. *Nature* 585(7825):357-362. <https://doi.org/10.1038/s41586-020-2649-2>
+12. McKinney W. (2010). Data Structures for Statistical Computing in Python. *Proceedings of the 9th Python in Science Conference (SciPy 2010)*. <https://doi.org/10.25080/Majora-92bf1922-00a>
+13. Hunter J.D. (2007). Matplotlib: A 2D Graphics Environment. *Computing in Science & Engineering* 9(3):90-95. <https://doi.org/10.1109/MCSE.2007.55>
+14. primer3-py: Python bindings for Primer3. <https://github.com/libnano/primer3-py>
 
 Tables are written with pandas [12] and plots drawn with matplotlib [13]. The environment
 is managed with [pixi](https://pixi.sh); containers use [Docker](https://www.docker.com)
