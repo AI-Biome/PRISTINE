@@ -1,42 +1,55 @@
-input_type: raw  # options: raw, prokka, panaroo    # only raw fully implemented
-
-input_paths:
-  raw_dir: "data/raw_genomes/"
-  prokka_dir: null
-  panaroo_dir: null
-
+# PRISTINE toy configuration. Relative paths are resolved against this file's directory.
+input_dir: "data/raw_genomes/"
 output_dir: "output/"
+max_cores: 4
 
-max_cores: 8
+# Loci whose combined informativeness score is below this are not copied to informative_loci/
+snp_avg_prop_threshold: 0.005
 
-aligner: mafft # options: mafft, clustal, prank
-
-snp_avg_prop_threshold: 0.05
-
-primer3_config_file: null   # not fully implemented yet, please keep "null" here for now
-
-# If a path to the primer3 config file is specified via primer3_config_file, these parameters are ignored
 primer3:
   global_params:
-    PRIMER_NUM_RETURN: 1
-    PRIMER_MAX_NS_ACCEPTED: 60
-    PRIMER_LIBERAL_BASE: 1
-    PRIMER_MIN_SIZE: 16
-    # PRIMER_OPT_SIZE: 20
-    PRIMER_MAX_SIZE: 22
-    PRIMER_MIN_TM: 43.0
-    # PRIMER_OPT_TM: 47.0
-    PRIMER_MAX_TM: 50.0
+    PRIMER_NUM_RETURN: 5
+    PRIMER_MIN_SIZE: 18
+    PRIMER_OPT_SIZE: 20
+    PRIMER_MAX_SIZE: 25
+    PRIMER_MIN_TM: 57.0
+    PRIMER_OPT_TM: 60.0
+    PRIMER_MAX_TM: 63.0
     PRIMER_PRODUCT_SIZE_RANGE: "1000-1500"
 
-snp_primer_design:
-  snp_window_size: 250        # Size of the sliding window to search for informative SNP clusters
-  snp_top_n: 5                # Number of top loci (ranked by informativeness) to design primers for
-  min_snps: 3                 # Minimum number of informative SNPs required within a window to proceed
+locus_discovery:
+  window_size: 2000          # >= largest product size; windows are tiled over one target genome
+  step: 500 
+  minimap2_preset: asm20
+  min_query_coverage: 0.9
+  max_divergence: 0.15
+  max_candidate_loci: 5000
+  require_in_nontargets: true
+  refine_with_mafft: false
 
-validation:
-  perform: no
-  database: "db/GSR_seqs_taxa.2bit"
-  pblat_min_identity: 99.9
-  match_median_filter_tolerance: 10
-  
+snp_primer_design:
+  snp_window_size: 250       # window scanned for SNP-dense regions (becomes primer3 SEQUENCE_TARGET)
+  snp_top_n: 5               # stop after this many loci have an accepted primer pair
+  min_snps: 3                # informative sites required per non-target species inside the amplicon
+  max_loci_to_try: 50
+  require_snps_for_all_nontargets: true
+
+primer_selection:
+  conservation: all          # "all": primer sites identical in every genome; "targets": only in target genomes
+  use_thermodynamics: true   # score candidate binding sites by duplex Tm (primer3 heterodimer)
+  annealing_temp: null       # default: PRIMER_MIN_TM - 3
+  binding_tm_margin: 5.0     # a genomic site counts as binding if its duplex Tm >= annealing_temp - margin
+  max_mismatches: 6          # prefilter: mismatches tolerated over the whole primer
+  three_prime_region: 8      # 3'-terminal bases scrutinised separately
+  three_prime_max_mismatches: 1  # mismatches tolerated inside the 3' region
+  seed_length: 4             # exact k-mer used to find candidate sites
+  max_offtarget_product_size: 4000
+  background_dir: null       # folder with FASTA genomes that must NOT amplify (host, contaminants, community); set this!
+amplicon_screen:
+  background_identity: true  # minimap2 identity of each selected amplicon in every background genome
+  remote_blast: false        # megablast the selected amplicons against NCBI nt (needs network; minutes per run)
+  blast_db: nt
+  hitlist_size: 100
+  entrez_query: null         # e.g. "bacteria[organism]" to restrict the BLAST database
+  min_identity_report: 90.0
+make_plots: true

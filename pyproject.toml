@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pristine"
+version = "0.2.0"
+description = "PRimer-based Identification Suite Targeting Informative Nucleotide Elements"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+  "biopython",
+  "pandas",
+  "numpy",
+  "pyyaml",
+  "primer3-py",
+  "matplotlib",
+]
+
+[project.scripts]
+pristine = "pristine.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
