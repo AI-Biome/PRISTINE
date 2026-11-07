@@ -1,5 +1,9 @@
 # PRISTINE
 
+Authors: Tomas Kudlacek, Melanie Taprogge, Katharina Hoff
+
+Contact: katharina.hoff@uni-greifswald.de
+
 PRISTINE (PRimer-based Identification Suite Targeting Informative Nucleotide Elements)
 designs PCR primer pairs for amplicon-sequencing based identification of a
 target group of bacteria (one or several species) against closely related non-target
