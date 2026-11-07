@@ -1,58 +1,18 @@
-FROM continuumio/miniconda3:latest
+# PRISTINE container: dependencies managed by pixi (see pixi.toml / pixi.lock).
+FROM ghcr.io/prefix-dev/pixi:0.81.0-noble AS build
 
-ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /opt/pristine
+COPY pixi.toml pixi.lock pyproject.toml LICENSE README.md ./
+COPY src ./src
+RUN pixi install --locked \
+ && pixi shell-hook -e default > /shell-hook.sh \
+ && echo 'exec "$@"' >> /shell-hook.sh
 
-# System dependencies
-
-RUN apt-get update && apt-get install -y \
-    procps \
-    curl \
-    git \
-    build-essential \
-    zlib1g-dev \
-    unzip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Conda environment
-
-COPY my_environment.yml /tmp/my_environment.yml
-
-SHELL ["/bin/bash", "-c"]
-
-RUN conda update -n base -c defaults conda -y && \
-    conda env create -f /tmp/my_environment.yml && \
-    source /opt/conda/etc/profile.d/conda.sh && \
-    conda activate primer_design_tool_full && \
-    conda install -y pyyaml && \
-    conda install -y -c conda-forge -c bioconda pblat && \
-    conda clean -afy
-
-# Install OBITools4
-
-RUN cd /opt && \
-    curl -L https://raw.githubusercontent.com/metabarcoding/obitools4/master/install_obitools.sh \
-    | bash
-
-RUN cd /opt && \
-    git clone https://github.com/metabarcoding/obitools4.git && \
-    cd obitools4 && \
-    sed -i 's/sudo //g' install_obitools.sh && \
-    bash install_obitools.sh
-
-# Copy PRISTINE
-
-COPY PRISTINE/PRISTINE_essentials.py /opt/PRISTINE_essentials.py
-
-RUN chmod +x /opt/PRISTINE_essentials.py
-
-# Environment
-
-ENV PATH=/opt/conda/envs/primer_design_tool_full/bin:$PATH
-ENV CONDA_DEFAULT_ENV=primer_design_tool_full
-
-# Default execution
-
-ENTRYPOINT ["/bin/bash", "-c", "\
-source /opt/conda/etc/profile.d/conda.sh && \
-conda activate primer_design_tool_full && \
-exec python /opt/PRISTINE_essentials.py \"$@\"", "--"]
+FROM ubuntu:24.04 AS production
+COPY --from=build /opt/pristine /opt/pristine
+COPY --from=build /shell-hook.sh /shell-hook.sh
+WORKDIR /data
+# Mount your project directory (containing config.yaml) at /data:
+#   docker run --rm -v "$(pwd):/data" pristine --config config.yaml
+ENTRYPOINT ["/bin/bash", "/shell-hook.sh", "pristine"]
+CMD ["--config", "config.yaml"]

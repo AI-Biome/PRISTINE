@@ -1,244 +1,497 @@
-# PRISTINE: PRimer-based Identification Suite Targeting Informative Nucleotide Elements
+# PRISTINE
+
+PRISTINE (PRimer-based Identification Suite Targeting Informative Nucleotide Elements)
+designs PCR primer pairs for amplicon-sequencing based identification of a
+target group of bacteria (one or several species) against closely related non-target
+species. Each primer pair
+
+- binds sites that are identical in every input genome (targets and non-targets),
+  so the amplicon is produced from all of them;
+- encloses a region that is rich in informative sites (positions where the target
+  group differs from each non-target species), so reads of the amplicon tell targets
+  and non-targets apart;
+- yields exactly one product per genome in silico, and none in optional
+  background genomes.
+
+Amplicon sizes of 500-1800 bp are intended for Oxford Nanopore sequencing and for
+downstream analysis with [PRISCREEN](https://github.com/AI-Biome/PRISCREEN).
 
 ## Installation
 
-This pipeline is distributed as a self-contained [Apptainer](https://apptainer.org/) (formerly known as Singularity) container, which includes all necessary dependencies and tools pre-installed.
-
-To use the pipeline, you will need to have **Apptainer** installed on your system. Installation instructions are available on the [Apptainer documentation site](https://apptainer.org/docs/).
-
-Once Apptainer is installed, no further setup is required. Simply download the pipeline container with this command (it requires ca. 2.5 GB of disk space)
+Dependencies are managed with [pixi](https://pixi.sh). After installing pixi:
 
 ```bash
-apptainer pull library://jack2knife/pristine/pristine:latest
+git clone https://github.com/AI-Biome/PRISTINE.git
+cd PRISTINE
+pixi install          # creates ./.pixi with python, minimap2, mafft, primer3-py, ...
+pixi run pytest       # optional: run the test suite
 ```
 
-and then run it from within your project directory (see below for detailed instructions) with the following command:
-
-```back
-./pristine_latest.sif
-```
-
-This single .sif file encapsulates the entire environment, ensuring consistent and reproducible results across different systems.
-
-### macOS
-
-Apptainer is not natively supported on macOS. Mac users can instead run PRISTINE using Docker.
-
-First, install [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/) and ensure that Docker is running. Then download or clone the PRISTINE repository and navigate to the project directory containing the `Dockerfile` (root directory).
-
-Build the Docker image:
+Run the pipeline from the directory that holds your `config.yaml`:
 
 ```bash
-docker build -t pristine .
+pixi run --manifest-path /path/to/PRISTINE/pixi.toml pristine --config config.yaml
 ```
 
-Once the image has been built successfully, run PRISTINE with:
+or activate the environment once with `pixi shell` and then call `pristine` directly.
+
+```text
+pristine --help
+usage: pristine [-h] [-c CONFIG] [-t THREADS] [-o OUTPUT] [--log-level {DEBUG,INFO,WARNING,ERROR}] [--version]
+```
+
+`--threads` and `--output` override `max_cores` and `output_dir` from the config.
+
+### Containers
+
+A ready-made image with the locked pixi environment is on Docker Hub as
+[`gaiusaugustus/pristine`](https://hub.docker.com/r/gaiusaugustus/pristine). No local
+installation is needed. Run it from the directory that holds your `config.yaml`.
+
+With Docker (Linux, macOS, Windows), the project directory is mounted at `/data`, and
+`--user` keeps the output files owned by you.
 
 ```bash
-docker run --rm pristine
+docker pull gaiusaugustus/pristine:0.2.0
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v "$(pwd):/data" gaiusaugustus/pristine:0.2.0 --config config.yaml
 ```
 
-Additional command-line arguments can be passed directly to the container. For example:
+Apptainer and Singularity (on HPC clusters) mount the current directory
+automatically.
 
 ```bash
-docker run --rm pristine --help
+apptainer pull pristine.sif docker://gaiusaugustus/pristine:0.2.0
+apptainer run pristine.sif --config config.yaml
 ```
 
-If your analysis requires access to files stored on your computer, mount the current working directory into the container:
+The image is built for x86-64. On Apple Silicon Macs Docker runs it under emulation,
+which is slower but works.
+
+To build the image yourself from the repository root, use
+`docker build -t pristine .` or `apptainer build pristine.sif PRISTINE/PRISTINE.def`.
+
+## Quick start with the toy dataset
+
+`PRISTINE/toy_dataset/` contains two *Yersinia pseudotuberculosis* genomes (targets)
+and two *Yersinia pestis* genomes (non-targets) plus a ready `config.yaml`:
 
 ```bash
-docker run --rm -v "$(pwd):/data" pristine
+cd PRISTINE/toy_dataset
+pixi run --manifest-path ../../pixi.toml pristine --config config.yaml
+
+# or, without installing anything, with the container
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v "$(pwd):/data" gaiusaugustus/pristine:0.2.0 --config config.yaml
 ```
 
-On Apple Silicon systems (M1/M2/M3/M4), Docker will automatically use the appropriate container architecture if a compatible image is available.
+With 4 threads this takes about a minute and writes `output/`.
 
 ## Input
 
-To run the pipeline, you need:
+### Directory layout
 
-- A configuration file named `config.yaml`
-- A properly structured input directory with raw genome assemblies
+One folder per target group, named like the group (for a single species:
+`Genus_species`). Target genome files are named `<group>_<i>.fasta`. A `non-targets/`
+subfolder holds genomes of closely related species that must be distinguished from
+the group. A top-level `non-targets/` folder holds non-targets used for every group.
+Non-target species are identified by the file name without the trailing `_<i>`
+(`Yersinia_pestis_2.fasta` is species `Yersinia_pestis`). Accepted extensions:
+`.fasta .fa .fas .fna`.
 
-### Configuration File
-
-The file `config.yaml` must be placed in the **same directory as the container** (`PRISTINE.sif`). It defines all global parameters, paths, and settings required for the analysis (for details, see below).
-
-## Quick Start with Toy Dataset
-
-A toy dataset is provided in the `toy_dataset/` directory. It includes:
-
-- A small set of raw genome FASTA files organized in the correct input structure
-- A ready-to-use configuration file: `config.yaml`
-
-To quickly test the pipeline:
-
-1. **Download the `toy_dataset/` directory**
-2. **Place the Apptainer container** (`pristine_latest.sif`) inside the `toy_dataset/` folder
-3. From within the `toy_dataset/` directory, run:
-
-```bash
-./pristine_latest.sif
-```
----
-
-## Pipeline overview
-
-![Pipeline Diagram](PRISTINE-1.svg)
-
-### Input Directory Structure
-
-Currently, the pipeline supports input in the form of **raw genome FASTA files** (annotation-based support coming soon).
-
-The input directory is organized by species. Each target species must have its own folder, named in the format Genus_species, where:
-
-Genus is the genus name (capitalized)
-
-species is the species name (lowercase)
-
-Inside each species folder:
-
-There must be one or more genome files in FASTA format
-
-Each FASTA file must be named exactly as the folder, with a suffix _i, where i is a unique integer (e.g., Yersinia_pseudotuberculosis_1.fasta)
-
-In addition, each species folder contains a subfolder named non-targets/, which holds genome files for closely related non-target species. These files follow the same naming rule: Genus_species_i.fasta.
-
-At the top level of the input directory, there may also be a folder named non-targets/. This contains additional non-target genome files that will be used in all comparisons, regardless of species.
-
-An example input directory structure:
-
-```bash
+```text
 input/
 ├── Yersinia_pseudotuberculosis/
 │   ├── Yersinia_pseudotuberculosis_1.fasta
 │   ├── Yersinia_pseudotuberculosis_2.fasta
 │   └── non-targets/
 │       ├── Yersinia_enterocolitica_1.fasta
-│       └── Yersinia_intermedia_1.fasta
-│
-├── Escherichia_coli/
-│   ├── Escherichia_coli_1.fasta
-│   ├── Escherichia_coli_2.fasta
-│   └── non-targets/
-│       ├── Shigella_sonnei_1.fasta
-│       └── Klebsiella_pneumoniae_1.fasta
-│
+│       └── Yersinia_pestis_1.fasta
 └── non-targets/
-    ├── Salmonella_enterica_1.fasta
-    ├── Vibrio_cholerae_1.fasta
-    └── Campylobacter_jejuni_1.fasta
+    └── Salmonella_enterica_1.fasta
 ```
 
-## Configuration File: `config.yaml`
+Input files are never modified. Genomes may be draft assemblies (several contigs).
 
-The configuration file defines all input paths, pipeline settings, and primer design parameters. Below is a breakdown of each section:
+### Configuration file
 
-### `input_type`
-Specifies the format of the input data.
+All relative paths are resolved relative to the directory of the config file.
 
-- `raw` – Input consists of raw genome FASTA files (currently fully supported)
-- `prokka` – Input is in the form of Prokka-annotated files (not yet supported)
-- `panaroo` – Input comes from a Panaroo output folder (not yet supported)
+```yaml
+input_dir: "data/raw_genomes/"
+output_dir: "output/"
+max_cores: 8                      # default 1; minimap2 threads, mafft loci at once, and in silico PCR worker processes (Linux)
+snp_avg_prop_threshold: 0.005     # default 0.01; loci scoring below this are not copied to informative_loci/
 
-### `input_paths`
+primer3:
+  global_params:                  # any Primer3 global tag; values shown are the defaults
+    PRIMER_NUM_RETURN: 5          # candidate pairs per locus that are checked in silico
+    PRIMER_MIN_SIZE: 18
+    PRIMER_OPT_SIZE: 20
+    PRIMER_MAX_SIZE: 25
+    PRIMER_MIN_TM: 57.0
+    PRIMER_OPT_TM: 60.0
+    PRIMER_MAX_TM: 63.0
+    PRIMER_PAIR_MAX_DIFF_TM: 3.0
+    PRIMER_MIN_GC: 35.0
+    PRIMER_MAX_GC: 65.0
+    PRIMER_MAX_POLY_X: 4
+    PRIMER_PRODUCT_SIZE_RANGE: "500-1800"   # several ranges: "500-1000 1200-1800"
 
-- `raw_dir`: Path to the directory containing raw genome input folders (one per species)
-- `prokka_dir`: Placeholder for Prokka input (set to `null`)
-- `panaroo_dir`: Placeholder for Panaroo input (set to `null`)
+locus_discovery:
+  window_size: 2000               # bp; must be >= the largest product size
+  step: 500                       # bp between window starts on the reference genome
+  minimap2_preset: asm20          # asm5 / asm10 / asm20 (increasing divergence tolerated)
+  min_query_coverage: 0.9         # a window must align over >= 90 % of its length
+  max_divergence: 0.15            # an alignment more divergent than this does not count as a hit
+  max_secondary_coverage: 0.5     # a further hit covering more than this marks the window multi-copy
+  max_n_fraction: 0.05            # windows with more Ns than this are not tiled
+  max_candidate_loci: 5000        # most divergent (vs non-targets) windows kept for scoring
+  require_in_nontargets: true     # false: a locus may be absent from non-target genomes
+  refine_with_mafft: false        # re-align loci with mafft before primer design
 
-### `output_dir`
+snp_primer_design:
+  snp_window_size: 250            # window scanned for informative-site clusters
+  snp_top_n: 5                    # number of loci (one primer pair each) to select
+  min_snps: 3                     # informative sites required per non-target species in the amplicon
+  max_loci_to_try: 50             # at most this many loci (by rank) go through primer design
+  require_snps_for_all_nontargets: true   # false: min_snps for at least one non-target species
 
-- Directory where all output results, logs, and intermediate files will be stored.
+primer_selection:
+  conservation: all               # "all": primer sites identical in every genome; "targets": only in targets
+  use_thermodynamics: true        # score candidate binding sites by duplex Tm (primer3)
+  annealing_temp: null            # default PRIMER_MIN_TM - 3
+  binding_tm_margin: 5.0          # a site binds if its duplex Tm >= annealing_temp - margin
+  max_mismatches: 6               # prefilter: mismatches tolerated over the whole primer
+  three_prime_region: 8           # 3'-terminal bases scrutinised separately
+  three_prime_max_mismatches: 1   # mismatches tolerated inside the 3' region
+  seed_length: 4                  # exact k-mer used to find candidate sites (see step 7)
+  max_offtarget_product_size: 4000
+  background_dir: null            # folder of FASTA genomes of other organisms in the samples (set this!)
+  background_products: distinguish  # or "reject": any background product fails a pair
 
-### `max_cores`
+amplicon_screen:
+  background_identity: true       # minimap2 identity of each selected amplicon in every background genome
+  remote_blast: true              # megablast the selected amplicons against NCBI nt (network, minutes; false offline)
+  blast_db: nt
+  megablast: true                 # false: blastn (more sensitive, slower)
+  hitlist_size: 100
+  entrez_query: null              # e.g. "bacteria[organism]"
+  min_identity_report: 90.0       # NCBI hits below this identity are not reported
+  fallback_tolerated_identity: 98.0   # lower bound of the tolerated identity (step 11)
 
-- Maximum number of CPU cores to use for multi-threaded steps (e.g. alignment, BLAT, Panaroo).
+make_plots: true
+```
 
-### `aligner`
+`PRIMER_MAX_NS_ACCEPTED` is always 0: the design template is N-masked at every
+position that is not identical across the genomes, which is what keeps primers in
+conserved sites. Config files of the previous prokka/panaroo based version are still
+read; their obsolete keys are ignored with a warning.
 
-- Tool used for multiple sequence alignment.
-- Options:
-  - `mafft`
-  - `clustal`
-  - `prank`
+## How it works
 
-### `snp_avg_prop_threshold`
+![PRISTINE workflow](PRISTINE-1.svg)
 
-- Minimum average proportion of informative SNPs a locus must have to be considered diagnostic and retained in downstream analysis.
+The figure is generated by `python docs/make_workflow_figure.py`.
 
-### `primer3_config_file`
+The headings below follow the stages (A-D) and step numbers of the figure.
 
-- Path to an external Primer3 config file (not fully implemented).
-- If set, it overrides the `primer3.global_params` section.
-- **Keep as `null` for now.**
+### A. Locus discovery
 
-### `primer3.global_params`
+Genomes are discovered from the directory layout. Steps 1-3 use minimap2 [1].
 
-Parameters passed directly to Primer3 for primer design. These include:
+#### 1. Reference windows
 
-- `PRIMER_NUM_RETURN`: Number of primer pairs Primer3 should return (default = 1)
-- `PRIMER_MAX_NS_ACCEPTED`: Max number of ambiguous bases allowed in the template
-- `PRIMER_LIBERAL_BASE`: Whether to use relaxed base recognition
-- `PRIMER_MIN_SIZE` / `PRIMER_MAX_SIZE`: Minimum and maximum allowed primer lengths
-- `PRIMER_MIN_TM` / `PRIMER_MAX_TM`: Minimum and maximum melting temperatures (°C)
-- `PRIMER_PRODUCT_SIZE_RANGE`: Desired size range for PCR products (e.g. `"500-1800"`)
+The largest target genome of a group is the reference. It is tiled into overlapping
+windows of `window_size` bp, `step` bp apart.
 
-### `snp_primer_design`
+#### 2. Genome-wide mapping
 
-Settings for SNP-aware primer design strategy:
+All windows are mapped to every genome, several genomes at a time with up to
+`max_cores` threads. Mapping the toy dataset (four 4.7 Mb genomes) takes about 20
+seconds with 4 threads.
 
-- `snp_window_size`: Size of the window (in bp) used to scan for SNP-rich regions
-- `snp_top_n`: Number of top-ranked loci to attempt primer design on
-- `min_snps`: Minimum number of informative SNPs required within a window to proceed with primer design
+#### 3. Single-copy filter
 
-### `validation` (not fully implemented yet)
+A window is kept when, in each genome, it has exactly one alignment covering >=
+`min_query_coverage` of the window and no secondary alignment covering more than half
+of it. This removes repeats, mobile elements and multi-copy genes, which are a major
+source of unexpected PCR products.
 
-Optional post-design validation settings using pBLAT:
+### B. Marker scoring
 
-- `perform`: Set to `yes` or `no` to enable/disable in silico validation
-- `database`: Path to the reference `.2bit` database used for pBLAT validation
-- `pblat_min_identity`: Minimum identity threshold (%) for considering alignments
-- `match_median_filter_tolerance`: Allowed deviation in median match length between targets and non-targets
+#### 4. Locus alignment
+
+The base-level `cs` strings of the mappings are stacked into one reference-anchored
+alignment per locus. No multiple-sequence aligner is run here, so the number of
+genomes does not blow up the runtime. Optionally (`refine_with_mafft`), only the few
+loci that reach primer design are re-aligned with MAFFT [6], `max_cores` loci at a
+time, and re-scored.
+
+#### 5. Informative-site scoring
+
+A column is informative for non-target species S if the bases shown by the target
+genomes and the bases shown by S's genomes are disjoint. A run of gap columns is one
+indel event. Loci are ranked by the mean proportion of informative sites over
+non-target species (and, for groups with several target species, by pairwise
+between-species sites).
+
+### C. Primer design
+
+#### 6. Primer design
+
+This step uses Primer3 [2, 3] through primer3-py [14]. The design template is the
+alignment consensus with every non-conserved column (and every column touched by an
+insertion) masked as N. The densest `snp_window_size` window of informative sites is
+passed to Primer3 as `SEQUENCE_TARGET`, so the amplicon must enclose it.
+
+### D. Specificity validation
+
+#### 7. In silico PCR
+
+Every candidate pair is tested against all genomes of the group.
+Binding sites are found on both strands in two stages: a NumPy [11] seed scan that finds
+every genomic window with at most `three_prime_max_mismatches` mismatches in the
+3'-terminal `three_prime_region` bases and at most `max_mismatches` overall. Every
+exact `seed_length`-mer of the 3' region is looked up. The config requires
+`three_prime_region >= (three_prime_max_mismatches + 1) * seed_length`, so a
+mismatch-free seed always exists and no site within these limits is missed, even
+with a mismatch at the terminal base. With `use_thermodynamics`, the 5' part is also
+compared at a shift of one base so template bulges are not missed, and Primer3's
+thermodynamic heterodimer calculation, based on nearest-neighbour parameters
+[4, 5], gives the duplex Tm of the primer on that genomic window. A site binds if
+the Tm is at least `annealing_temp - binding_tm_margin` (49 C by default); without
+thermodynamics the mismatch limits alone decide. All products up to
+`max_offtarget_product_size` from any primer combination (including F/F and R/R)
+are enumerated. A pair is accepted only if
+
+- no genome gives a product outside the locus,
+- every genome that carries the locus gives exactly one product there (with
+  `conservation: targets`, non-target genomes may give none),
+- every product at the locus is between 90 % of the smallest and 110 % of the
+  largest `PRIMER_PRODUCT_SIZE_RANGE` bound (alignment and real sizes differ by
+  indels), and
+- the amplicon contains at least `min_snps` informative sites for each non-target
+  species (for at least one with `require_snps_for_all_nontargets: false`).
+
+With `require_in_nontargets: false`, a non-target genome that lacks the locus must
+give no product at all; its absence already tells it apart.
+
+This step dominates the runtime. A pair that fails the informative-site criterion
+is not amplified at all, since that check needs no PCR. The duplex Tm is computed
+only for candidate sites that have a possible partner site on the other strand
+within `max_offtarget_product_size`, and it is cached because related genomes repeat
+the same binding sites; neither shortcut changes the products. On Linux the step
+runs in `max_cores` worker processes, one candidate pair per worker, sharing genome
+k-mer indexes that are built once. Primer3 is run on a few loci at a time so that
+every worker has a pair, and the results are taken in rank order, so the output does
+not depend on `max_cores`. The background screen splits the pairs still passing over
+the workers in the same way. On macOS the step runs on one core.
+
+#### 8. Background screen
+
+All pairs that survived step 7 are screened in one streaming pass over the genomes in
+`background_dir` (loaded one file at a time, so hundreds of genomes are fine). Because
+the amplicon is sequenced, a background organism may amplify as long as its product
+can be told apart from the target: with `background_products: distinguish` (the
+default), a product that differs from every target amplicon by fewer than `min_snps`
+substitutions + indel events rejects the pair, and any other product is recorded in
+the `Background_Products` column. Products sharing less than half their 15-mers with
+every target amplicon count as different without an alignment; the others are aligned
+globally (Biopython). With `background_products: reject`, any background product
+rejects the pair.
+
+#### 9. Locus selection
+
+The best surviving pair per locus is selected in rank order, one locus per genomic
+region (amplicons on the reference must not overlap). Pairs without any background
+product are preferred: a locus whose passing pairs all amplify in the background is
+kept in reserve, and reserve loci are selected (marked as fallback in
+`locus_design_log.csv`) only after `max_loci_to_try` loci have been tried with fewer
+than `snp_top_n` loci selected. Steps 6-9 run in rounds (the loop arrow in the
+figure): each round designs loci until it has twice as many passing regions as are
+still missing (as many without a background), so the background screen can reject
+some. If fewer than `snp_top_n` loci are selected, the next round continues with the
+next-ranked loci, until `snp_top_n` loci are selected or `max_loci_to_try` loci have
+been tried (a warning reports a shortfall). Without `background_dir` the pipeline
+warns loudly: the screen then knows nothing beyond your input genomes.
+
+#### 10. Multiplex check
+
+The selected pairs are checked for pooling in one reaction: in silico PCR with primers
+of two different pairs combined, on every genome of the group. Products formed this
+way go to `primers/multiplex_check.csv`, and each pair of loci that forms one is
+reported with a warning not to pool them. This check uses the group's own genomes
+only, not the background genomes.
+
+#### 11. Amplicon similarity screen
+
+Primer screening asks *what amplifies*; this step asks *who else carries this marker*.
+For every selected locus the reference amplicon is (a) mapped to each background
+genome with minimap2 and (b), unless `remote_blast: false`, megablasted [7, 8] against
+NCBI nt [9] through NCBI's web service, submitted and parsed with Biopython [10]. Each
+hit is labelled target, known non-target or unknown taxon by its organism name. An
+unknown organism whose identity to the amplicon is at least the *tolerated identity*
+(100 % minus the fraction of informative sites separating the target from its nearest
+designed non-target, but at least `fallback_tolerated_identity`), over at least half
+of the amplicon, is a false-positive risk and is reported with a warning: add it as a
+non-target or background genome and rerun. Background genomes are flagged by the same
+rule. This flag differs from the background screen in step 8: it asks whether a
+background genome carries a sequence as close to the amplicon as the nearest
+non-target, whether or not the primers amplify it, while step 8 asks whether an actual
+background product could be mistaken for the target (fewer than `min_snps`
+differences). A selected locus can therefore pass step 8 and still be flagged here. A
+failed NCBI request is logged and recorded in the summary (`BLAST_Error`); it does not
+stop the run.
 
 ## Output
 
-The pipeline generates an organized output directory containing results for each species. The top-level `output/` folder includes the following subdirectories:
+```text
+output/
+├── run_summary.csv                      one row per group
+├── pristine.log
+└── <group>/
+    ├── locus_discovery/                 reference_windows.fasta, <genome>.paf (+ .paf.log) per genome
+    ├── loci/
+    │   ├── locus_table.csv              locus -> coordinates in every genome
+    │   ├── aligned/<locus>.fasta        reference-anchored alignments of all candidate loci
+    │   └── mafft/                       re-aligned loci (refine_with_mafft only)
+    ├── informative_loci/
+    │   ├── snp_summary.csv              scores and informative positions per locus (see below)
+    │   ├── heatmap_informativeness.png
+    │   ├── <locus>.fasta                alignments passing snp_avg_prop_threshold
+    │   ├── consensus_sequences/         <locus>.fasta (IUPAC consensus), <locus>.masked_template.fasta
+    │   └── snp_density_plots/           snp_positions_<locus>.png for selected loci
+    └── primers/
+        ├── selected_primers.csv         the accepted primer pair per locus  <-- main result
+        ├── primer_design_summary.csv    every candidate pair with pass/fail reasons
+        ├── locus_design_log.csv         per locus: target region and outcome
+        ├── multiplex_check.csv          products formed by primers of two different selected pairs (pooling)
+        ├── <locus>_primers.fasta        LEFT/RIGHT sequences of accepted pairs
+        ├── amplicons/<locus>_amplicons.fasta  predicted amplicon of every genome, locus orientation
+        ├── amplicon_alignments/<locus>.png  loci that amplify in the background: every amplicon aligned to the reference amplicon, differences coloured by base (+ <locus>_differences.tsv)
+        └── amplicon_screen/
+            ├── amplicon_screen_summary.csv  per locus: tolerated identity, closest background genome, risk taxa
+            ├── background_identity.csv      amplicon vs. background genome identities
+            ├── blast_hits.csv               NCBI hits with organism, identity, status (remote_blast only)
+            ├── blast_results.xml            raw NCBI BLAST XML (remote_blast only)
+            └── reference_amplicons.fasta    query sequences, ready for manual Primer-BLAST / BLAST
+```
 
-### `prokka_output/`
-Contains Prokka annotation results for each genome. Automatically generated from raw input if `input_type` is set to `raw`.
+Locus names are `<contig>_<start>_<end>` on the reference genome.
 
-### `panaroo_output/`
-Stores results from Panaroo pan-genome analysis, used internally for identifying shared and variable loci.
+`run_summary.csv` gives, per group, the reference genome, the numbers of genomes,
+background genomes, candidate, scored, tried and designed loci, the number of selected
+primer sets and the runtime, or an `Error` column if the group failed (the exit code
+is then 1). The plots are skipped with `make_plots: false`.
 
-### `informative_loci/` **(Key output for users)**
+`locus_design_log.csv` has one row per locus that went through primer design: score,
+conserved fraction of the template, `Target_Start`/`Target_Length` (the
+`SEQUENCE_TARGET`) and `Outcome`, e.g. `selected pair 0`, `primer3 found no pair (...)`,
+`all passing pair(s) rejected by the background screen` or
+`skipped: amplicon overlaps selected locus ...`.
 
-This folder contains loci identified as having high diagnostic potential based on SNP profiles:
+`snp_summary.csv` columns: `Combined_Informativeness_Score` (ranking),
+`Avg_Prop_Informative_SNPs_External`/`_Internal`, and per non-target species `S`:
+`Prop_External_S`, `Abs_External_S` (substitutions + indel events),
+`Subst_External_S`, `Indel_External_S`, `SNP_Pos_External_S` (alignment columns) and
+`Core_Region_External_S`. Groups with several target species get the same columns as
+`..._Internal_<A>_vs_<B>`.
 
-- **FASTA files** for each high-value locus
-- `heatmap_informativeness.png`: visual overview of SNP informativeness across loci and species
-- `snp_summary.csv`: tabular summary of all loci, including SNP positions, proportions, and informativeness scores
+`selected_primers.csv` / `primer_design_summary.csv` columns include the primer
+sequences, Tm and GC, `Template_Product_Size` (on the alignment, including insertion
+columns of other genomes), `On_Target_Product_Sizes` (real predicted size per genome),
+`Sites_In_Amplicon_External_S`, `Min_On_Target_Site_Tm` (weakest predicted primer
+duplex among the intended sites) and `Failure_Reasons` for rejected pairs.
 
-The file `snp_summary.csv` provides a detailed summary of all analyzed loci with respect to their SNP-based diagnostic potential. For each locus, it includes:
+`amplicon_alignments/<locus>.png` is drawn for every selected locus that also amplifies
+in a background genome. Each row is one predicted amplicon (identical ones collapsed)
+aligned to the reference amplicon; grey is the reference base, coloured bars are
+differences. The example below comes from the toy data run with the two
+*Yersinia pestis* genomes given as background as well, so the non-target and
+background rows coincide. In a real run the background rows show how far each
+background product is from the targets; `<locus>_differences.tsv` lists every
+difference.
 
-- The number and proportion of **informative SNPs** (per non-target species and averaged)
-- The **positions** of informative SNPs
-- The **median length** of aligned sequences in target and non-target genomes
-- The **difference in median lengths**, which may reflect indel-based divergence
-- A list of informative SNP **positions** and the **position range** that captures the majority of SNPs (±2 SD)
+![Example amplicon alignment](docs/example_amplicon_alignment.png)
 
-This file serves as the analytical foundation for selecting loci for downstream primer design.
+## When too few or no markers are found
 
-#### Subfolders:
+A group that has no single-copy locus shared by all required genomes fails: its row
+in `run_summary.csv` has an `Error`, the other groups still run, and the exit code
+is 1. Otherwise the run finishes with exit code 0 even if fewer than `snp_top_n`
+loci (or none) were selected; the log then warns
+`only <n> of snp_top_n=<N> loci selected after trying <m> locus/loci`, and
+`selected_primers.csv` has no rows. Before that point, loci whose primer
+pairs amplify in a background genome are added as a fallback (step 9).
 
-- **`consensus_sequences/`**: consensus FASTA sequences of informative loci, used for primer design
-- **`snp_density_plots/`**: line plots showing SNP distributions across loci for visualization and interpretation
+The reason is in `primers/locus_design_log.csv` (`Outcome`, one row per locus) and in
+`primer_design_summary.csv` (`Failure_Reasons`, one row per primer pair). What to
+change depends on the outcome:
 
-### `primers/` **(Key output for users)**
+| Outcome or failure reason | Meaning | Settings to try |
+| --- | --- | --- |
+| Group fails with `No single-copy loci shared by the required genomes were found` | No window maps once, over its full length, to every genome | lower `min_query_coverage`, raise `max_divergence`, `require_in_nontargets: false`, check the inputs for very fragmented assemblies |
+| `no window of ... bp with >= ... informative sites` | Targets and non-targets are too similar at this locus | lower `min_snps`, larger `snp_window_size`, `require_snps_for_all_nontargets: false` |
+| `primer3 found no pair (...)` | Too few conserved positions next to the informative sites | `conservation: targets`, a wider `PRIMER_PRODUCT_SIZE_RANGE`, a wider Tm or size range |
+| `amplicon has < ... informative sites` | The amplicon misses the informative sites of some non-target | as for `no window ...` above |
+| `<genome>: ... off-target product(s)`, `... products at locus` | Primers bind elsewhere in an input genome | raise `PRIMER_NUM_RETURN` so more pairs per locus are tested, raise `max_loci_to_try` |
+| `background ...: ... product(s), only ... difference(s)` | A background product looks too much like the target amplicon | move that organism to the non-targets if it must be told apart, or keep it and accept fewer loci |
 
-Contains designed primer pairs targeting the most informative SNP-rich regions:
+Raising `max_loci_to_try` (default 50) is always worth a try: loci are designed in
+rank order, and lower-ranked loci often still have enough informative sites. If
+almost no locus reaches `min_snps`, the target group may not be separable from a
+non-target species with single-copy amplicons of this size at all; the
+`Abs_External_<species>` columns of `snp_summary.csv` show how many sites separate
+them at the best loci.
 
-- `primer_design_summary.csv`: detailed summary of primer sequences, SNP coverage, Tm, GC content, and amplicon size
-- One FASTA file **per locus** containing the left and right primer sequences (`Locus_primers.fasta`)
+## Notes on specificity
 
-All outputs are grouped by species to keep analyses modular and easily navigable.
+Primers with Tm around 60 C, no ambiguous bases, and a single predicted product in
+every input genome are necessary but not sufficient for a clean PCR: the in silico
+check only knows the genomes you provide. Add genomes of organisms expected in your
+samples (host, common contaminants, other community members, e.g. the taxa seen in
+16S profiles of the same samples) to `background_dir`, or as non-targets if they
+should also be discriminated by the amplicon. For a final shortlist, Primer-BLAST
+against NCBI nt remains the broadest available screen. The thermodynamic binding model
+is a prediction: a reported duplex Tm just above the threshold means that a weak
+product is possible.
 
+## Development
+
+```bash
+pixi run test                  # pytest on synthetic genomes (uses minimap2, mafft, primer3)
+```
+
+The code lives in `src/pristine/`: `config` (YAML loading and validation), `manifest`
+(input discovery), `loci` (windows, minimap2), `pseudoalign` (alignments from cs
+tags), `alignment` (optional mafft refinement), `scoring`, `consensus`, `primers`
+(primer3), `insilico_pcr`, `blast` (amplicon screen), `plots`, `seqio`, `pipeline`,
+`cli`. The tests run fully offline (`remote_blast: false`).
+
+## License
+
+PRISTINE is distributed under the Artistic License 2.0 (see [LICENSE](LICENSE)).
+
+## References
+
+If you use PRISTINE, please also cite the tools it builds on.
+
+1. Li H. (2018). Minimap2: pairwise alignment for nucleotide sequences. *Bioinformatics* 34(18):3094-3100. <https://doi.org/10.1093/bioinformatics/bty191>
+2. Untergasser A. et al. (2012). Primer3: new capabilities and interfaces. *Nucleic Acids Research* 40(15):e115. <https://doi.org/10.1093/nar/gks596>
+3. Koressaar T., Remm M. (2007). Enhancements and modifications of primer design program Primer3. *Bioinformatics* 23(10):1289-1291. <https://doi.org/10.1093/bioinformatics/btm091>
+4. SantaLucia J. Jr. (1998). A unified view of polymer, dumbbell, and oligonucleotide DNA nearest-neighbor thermodynamics. *PNAS* 95(4):1460-1465. <https://doi.org/10.1073/pnas.95.4.1460>
+5. SantaLucia J. Jr., Hicks D. (2004). The thermodynamics of DNA structural motifs. *Annual Review of Biophysics and Biomolecular Structure* 33:415-440. <https://doi.org/10.1146/annurev.biophys.32.110601.141800>
+6. Katoh K., Standley D.M. (2013). MAFFT multiple sequence alignment software version 7: improvements in performance and usability. *Molecular Biology and Evolution* 30(4):772-780. <https://doi.org/10.1093/molbev/mst010>
+7. Camacho C. et al. (2009). BLAST+: architecture and applications. *BMC Bioinformatics* 10:421. <https://doi.org/10.1186/1471-2105-10-421>
+8. Zhang Z., Schwartz S., Wagner L., Miller W. (2000). A greedy algorithm for aligning DNA sequences. *Journal of Computational Biology* 7(1-2):203-214. <https://doi.org/10.1089/10665270050081478>
+9. Sayers E.W. et al. (2026). Database resources of the National Center for Biotechnology Information in 2026. *Nucleic Acids Research* 54(D1):D20-D27. <https://doi.org/10.1093/nar/gkaf1060>
+10. Cock P.J.A. et al. (2009). Biopython: freely available Python tools for computational molecular biology and bioinformatics. *Bioinformatics* 25(11):1422-1423. <https://doi.org/10.1093/bioinformatics/btp163>
+11. Harris C.R. et al. (2020). Array programming with NumPy. *Nature* 585(7825):357-362. <https://doi.org/10.1038/s41586-020-2649-2>
+12. McKinney W. (2010). Data Structures for Statistical Computing in Python. *Proceedings of the 9th Python in Science Conference (SciPy 2010)*. <https://doi.org/10.25080/Majora-92bf1922-00a>
+13. Hunter J.D. (2007). Matplotlib: A 2D Graphics Environment. *Computing in Science & Engineering* 9(3):90-95. <https://doi.org/10.1109/MCSE.2007.55>
+14. primer3-py: Python bindings for Primer3. <https://github.com/libnano/primer3-py>
+
+Tables are written with pandas [12] and plots drawn with matplotlib [13]. The environment
+is managed with [pixi](https://pixi.sh); containers use [Docker](https://www.docker.com)
+or [Apptainer](https://apptainer.org).

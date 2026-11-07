@@ -1,0 +1,12 @@
+# pixi environments
+.pixi/
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+# pipeline output
+output/
+PRISTINE/toy_dataset/output/

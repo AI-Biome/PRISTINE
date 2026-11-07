@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  push:
+    branches: [main, debug_conc]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.81.0
+          locked: true
+          cache: true
+      - name: Run test suite (offline, synthetic genomes)
+        run: pixi run test
