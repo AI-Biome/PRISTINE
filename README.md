@@ -120,8 +120,8 @@ All relative paths are resolved relative to the directory of the config file.
 ```yaml
 input_dir: "data/raw_genomes/"
 output_dir: "output/"
-max_cores: 8                      # minimap2 threads, mafft loci at once, and in silico PCR worker processes (Linux)
-snp_avg_prop_threshold: 0.005     # loci scoring below this are not copied to informative_loci/
+max_cores: 8                      # default 1; minimap2 threads, mafft loci at once, and in silico PCR worker processes (Linux)
+snp_avg_prop_threshold: 0.005     # default 0.01; loci scoring below this are not copied to informative_loci/
 
 primer3:
   global_params:                  # any Primer3 global tag; values shown are the defaults
@@ -167,7 +167,8 @@ primer_selection:
   three_prime_max_mismatches: 1   # mismatches tolerated inside the 3' region
   seed_length: 4                  # exact k-mer used to find candidate sites (see step 6)
   max_offtarget_product_size: 4000
-  background_dir: null            # folder of FASTA genomes in which the primers must not amplify (set this!)
+  background_dir: null            # folder of FASTA genomes of other organisms in the samples (set this!)
+  background_products: distinguish  # or "reject": any background product fails a pair
 
 amplicon_screen:
   background_identity: true       # minimap2 identity of each selected amplicon in every background genome
@@ -260,21 +261,36 @@ are enumerated. A pair is accepted only if
 With `require_in_nontargets: false`, a non-target genome that lacks the locus must
 give no product at all; its absence already tells it apart.
 
-This step dominates the runtime. On Linux it runs in `max_cores` worker processes,
-one candidate pair per worker; the genome k-mer indexes are built once and shared,
-and Tm values are cached because related genomes repeat the same binding sites.
-Primer3 is run on a few loci at a time so that every worker has a pair, and the
-results are taken in rank order, so the output does not depend on `max_cores`. The
-background screen splits the pairs still passing over the workers in the same way.
-On macOS the step runs on one core.
+This step dominates the runtime. A pair that fails the informative-site criterion
+is not amplified at all, since that check needs no PCR. The duplex Tm is computed
+only for candidate sites that have a possible partner site on the other strand
+within `max_offtarget_product_size`, and it is cached because related genomes repeat
+the same binding sites; neither shortcut changes the products. On Linux the step
+runs in `max_cores` worker processes, one candidate pair per worker, sharing genome
+k-mer indexes that are built once. Primer3 is run on a few loci at a time so that
+every worker has a pair, and the results are taken in rank order, so the output does
+not depend on `max_cores`. The background screen splits the pairs still passing over
+the workers in the same way. On macOS the step runs on one core.
 
 ### 7. Background screen
 
 All pairs that survived step 6 are screened in one streaming
 pass over the genomes in `background_dir` (loaded one file at a time, so hundreds of
-genomes are fine). Any product in a background genome rejects the pair. Then the
-best surviving pair per locus is selected in rank order, one locus per genomic
-region (amplicons on the reference must not overlap). Steps 5-7 run in rounds: each
+genomes are fine). Because the amplicon is sequenced, a background organism may
+amplify as long as its product can be told apart from the target: with
+`background_products: distinguish` (the default), a product that differs from every
+target amplicon by fewer than `min_snps` substitutions + indel events rejects the pair,
+and any other product is recorded in the `Background_Products` column. Products
+sharing less than half their 15-mers with every target amplicon count as different
+without an alignment; the others are aligned globally (Biopython). With
+`background_products: reject`, any background product rejects the pair.
+
+Then the best surviving pair per locus is selected in rank order, one locus per
+genomic region (amplicons on the reference must not overlap). Pairs without any
+background product are preferred: a locus whose passing pairs all amplify in the
+background is kept in reserve, and reserve loci are selected (marked as fallback in
+`locus_design_log.csv`) only after `max_loci_to_try` loci have been tried with fewer
+than `snp_top_n` loci selected. Steps 5-7 run in rounds: each
 round designs loci until it has twice as many passing regions as are still missing
 (as many without a background), so the background screen can reject some. If fewer than
 `snp_top_n` loci are selected, the next round continues with the next-ranked loci,
@@ -285,7 +301,8 @@ the screen then knows nothing beyond your input genomes.
 The selected pairs are then checked for pooling in one reaction: in silico PCR
 with primers of two different pairs combined, on every genome of the group. Products
 formed this way go to `primers/multiplex_check.csv`, and each pair of loci that
-forms one is reported with a warning not to pool them.
+forms one is reported with a warning not to pool them. This check uses the group's
+own genomes only, not the background genomes.
 
 ### 8. Amplicon screen
 
@@ -300,7 +317,11 @@ fraction of informative sites separating the target from its nearest designed
 non-target, but at least `fallback_tolerated_identity`), over at least half of the
 amplicon, is a false-positive risk and is reported with a warning: add it as a
 non-target or background genome and rerun. Background genomes are flagged by the
-same rule. A failed NCBI request is logged and recorded in the summary
+same rule. This flag differs from the background screen in step 7: it asks whether a
+background genome carries a sequence as close to the amplicon as the nearest
+non-target, whether or not the primers amplify it, while step 7 asks whether an
+actual background product could be mistaken for the target (fewer than `min_snps`
+differences). A selected locus can therefore pass step 7 and still be flagged here. A failed NCBI request is logged and recorded in the summary
 (`BLAST_Error`); it does not stop the run.
 
 ## Output
@@ -328,6 +349,7 @@ output/
         ├── multiplex_check.csv          products formed by primers of two different selected pairs (pooling)
         ├── <locus>_primers.fasta        LEFT/RIGHT sequences of accepted pairs
         ├── amplicons/<locus>_amplicons.fasta  predicted amplicon of every genome, locus orientation
+        ├── amplicon_alignments/<locus>.png  loci that amplify in the background: every amplicon aligned to the reference amplicon, differences coloured by base (+ <locus>_differences.tsv)
         └── amplicon_screen/
             ├── amplicon_screen_summary.csv  per locus: tolerated identity, closest background genome, risk taxa
             ├── background_identity.csv      amplicon vs. background genome identities
@@ -361,6 +383,47 @@ sequences, Tm and GC, `Template_Product_Size` (on the alignment, including inser
 columns of other genomes), `On_Target_Product_Sizes` (real predicted size per genome),
 `Sites_In_Amplicon_External_S`, `Min_On_Target_Site_Tm` (weakest predicted primer
 duplex among the intended sites) and `Failure_Reasons` for rejected pairs.
+
+`amplicon_alignments/<locus>.png` is drawn for every selected locus that also amplifies
+in a background genome. Each row is one predicted amplicon (identical ones collapsed)
+aligned to the reference amplicon; grey is the reference base, coloured bars are
+differences. The example below comes from the toy data run with the two
+*Yersinia pestis* genomes given as background as well, so the non-target and
+background rows coincide. In a real run the background rows show how far each
+background product is from the targets; `<locus>_differences.tsv` lists every
+difference.
+
+![Example amplicon alignment](docs/example_amplicon_alignment.png)
+
+## When too few or no markers are found
+
+A group that has no single-copy locus shared by all required genomes fails: its row
+in `run_summary.csv` has an `Error`, the other groups still run, and the exit code
+is 1. Otherwise the run finishes with exit code 0 even if fewer than `snp_top_n`
+loci (or none) were selected; the log then warns
+`only <n> of snp_top_n=<N> loci selected after trying <m> locus/loci`, and
+`selected_primers.csv` has no rows. Before that point, loci whose primer
+pairs amplify in a background genome are added as a fallback (step 7).
+
+The reason is in `primers/locus_design_log.csv` (`Outcome`, one row per locus) and in
+`primer_design_summary.csv` (`Failure_Reasons`, one row per primer pair). What to
+change depends on the outcome:
+
+| Outcome or failure reason | Meaning | Settings to try |
+| --- | --- | --- |
+| Group fails with `No single-copy loci shared by the required genomes were found` | No window maps once, over its full length, to every genome | lower `min_query_coverage`, raise `max_divergence`, `require_in_nontargets: false`, check the inputs for very fragmented assemblies |
+| `no window of ... bp with >= ... informative sites` | Targets and non-targets are too similar at this locus | lower `min_snps`, larger `snp_window_size`, `require_snps_for_all_nontargets: false` |
+| `primer3 found no pair (...)` | Too few conserved positions next to the informative sites | `conservation: targets`, a wider `PRIMER_PRODUCT_SIZE_RANGE`, a wider Tm or size range |
+| `amplicon has < ... informative sites` | The amplicon misses the informative sites of some non-target | as for `no window ...` above |
+| `<genome>: ... off-target product(s)`, `... products at locus` | Primers bind elsewhere in an input genome | raise `PRIMER_NUM_RETURN` so more pairs per locus are tested, raise `max_loci_to_try` |
+| `background ...: ... product(s), only ... difference(s)` | A background product looks too much like the target amplicon | move that organism to the non-targets if it must be told apart, or keep it and accept fewer loci |
+
+Raising `max_loci_to_try` (default 50) is always worth a try: loci are designed in
+rank order, and lower-ranked loci often still have enough informative sites. If
+almost no locus reaches `min_snps`, the target group may not be separable from a
+non-target species with single-copy amplicons of this size at all; the
+`Abs_External_<species>` columns of `snp_summary.csv` show how many sites separate
+them at the best loci.
 
 ## Notes on specificity
 

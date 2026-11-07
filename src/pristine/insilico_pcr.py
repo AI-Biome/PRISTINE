@@ -126,13 +126,17 @@ class GenomeIndex:
         key = (contig, k)
         if key not in self._lookup:
             codes = self.kmers(contig, k)
+            if 4**k <= np.iinfo(np.int16).max:
+                # numpy's stable sort is a radix sort for 16-bit integers: ~10x faster than
+                # sorting int32 (2.9 s vs 28 s for 100 Mb), same order
+                codes = codes.astype(np.int16)
             order = np.argsort(codes, kind="stable").astype(np.int32)
             self._lookup[key] = (codes[order], order)
             self._kmers.pop(key, None)  # the sorted copy is all we need; keep memory per genome low
         sorted_codes, order = self._lookup[key]
-        code32 = np.int32(code)  # same dtype as the array: a Python int would force a full int64 copy
-        lo = np.searchsorted(sorted_codes, code32, side="left")
-        hi = np.searchsorted(sorted_codes, code32, side="right")
+        typed = sorted_codes.dtype.type(code)  # same dtype as the array: a Python int would force a full int64 copy
+        lo = np.searchsorted(sorted_codes, typed, side="left")
+        hi = np.searchsorted(sorted_codes, typed, side="right")
         return order[lo:hi].astype(np.int64)
 
     def warm(self, k: int) -> "GenomeIndex":
@@ -235,9 +239,10 @@ def _prefilter(
     return starts[keep], total[keep], tp[keep]
 
 
-def find_sites(contig: str, genome: Union[str, GenomeIndex], primer: str, name: str, params: BindingParams) -> List[Site]:
-    """All binding sites of `primer` on both strands of one contig."""
-    index = genome if isinstance(genome, GenomeIndex) else GenomeIndex({contig: genome})
+def _site_candidates(contig: str, index: GenomeIndex, primer: str, name: str,
+                     params: BindingParams) -> List[Tuple[Site, str]]:
+    """Prefiltered sites of `primer` on both strands of one contig, each with the template
+    window its duplex Tm is computed on. The Tm is not computed here."""
     seq, arr = index.seqs[contig], index.arrays[contig]
     primer = primer.upper()
     L = len(primer)
@@ -245,23 +250,14 @@ def find_sites(contig: str, genome: Union[str, GenomeIndex], primer: str, name: 
     k = max(1, min(params.seed_length, R))
     shifts = (0, -1, 1) if params.min_tm is not None else (0,)
     n = arr.size
-    sites: List[Site] = []
-
-    def accept(template_window: str) -> Optional[float]:
-        if params.min_tm is None:
-            return None
-        tm = params.thermo.duplex_tm(primer, template_window)
-        return tm if tm >= params.min_tm else -1.0
+    out: List[Tuple[Site, str]] = []
 
     # plus strand: primer reads along the contig; its 3' end is the last base of the window
     starts = _candidate_starts(index, contig, primer, range(L - R, L - k + 1), k)
     starts, tot, _tp = _prefilter(arr, starts, _as_bytes(primer), slice(L - R, L), slice(0, L - R),
                                   params.max_mismatches, params.three_prime_max_mismatches, shifts)
     for start, mm in zip(starts.tolist(), tot.tolist()):
-        window = seq[max(0, start - TEMPLATE_SLACK) : start + L]
-        tm = accept(revcomp(window))
-        if tm is None or tm >= 0:
-            sites.append(Site(contig, start, start + L, "+", name, mm, tm))
+        out.append((Site(contig, start, start + L, "+", name, mm), revcomp(seq[max(0, start - TEMPLATE_SLACK) : start + L])))
 
     # minus strand: the reverse complement reads along the contig; the primer 3' end is its first base
     rc = revcomp(primer)
@@ -269,11 +265,50 @@ def find_sites(contig: str, genome: Union[str, GenomeIndex], primer: str, name: 
     starts, tot, _tp = _prefilter(arr, starts, _as_bytes(rc), slice(0, R), slice(R, L),
                                   params.max_mismatches, params.three_prime_max_mismatches, shifts)
     for start, mm in zip(starts.tolist(), tot.tolist()):
-        window = seq[start : min(n, start + L + TEMPLATE_SLACK)]
-        tm = accept(window)
-        if tm is None or tm >= 0:
-            sites.append(Site(contig, start, start + L, "-", name, mm, tm))
+        out.append((Site(contig, start, start + L, "-", name, mm), seq[start : min(n, start + L + TEMPLATE_SLACK)]))
+    return out
+
+
+def _bind(candidates: Sequence[Tuple[Site, str]], primer_of: Mapping[str, str], params: BindingParams) -> List[Site]:
+    """Candidates that bind: all of them in mismatch-only mode, else those whose duplex Tm
+    reaches params.min_tm (returned with the Tm set). Order is kept."""
+    if params.min_tm is None:
+        return [site for site, _ in candidates]
+    sites = []
+    for site, template in candidates:
+        tm = params.thermo.duplex_tm(primer_of[site.primer], template)
+        if tm >= params.min_tm:
+            sites.append(Site(site.contig, site.start, site.end, site.strand, site.primer, site.mismatches, tm))
     return sites
+
+
+def find_sites(contig: str, genome: Union[str, GenomeIndex], primer: str, name: str, params: BindingParams) -> List[Site]:
+    """All binding sites of `primer` on both strands of one contig."""
+    index = genome if isinstance(genome, GenomeIndex) else GenomeIndex({contig: genome})
+    return _bind(_site_candidates(contig, index, primer, name, params), {name: primer.upper()}, params)
+
+
+def _with_partner(candidates: Sequence[Tuple[Site, str]], max_product_size: int) -> List[Tuple[Site, str]]:
+    """Candidates that could be one end of a product: a plus site needs a minus site whose
+    end lies in (plus.end, plus.start + max_product_size], a minus site a plus site that
+    such a window covers. This is a superset of the sites in any product, so computing the
+    Tm only for these gives the same products. Order is kept."""
+    if not candidates:
+        return []
+    is_plus = np.array([s.strand == "+" for s, _ in candidates])
+    start = np.array([s.start for s, _ in candidates], dtype=np.int64)
+    end = np.array([s.end for s, _ in candidates], dtype=np.int64)
+    plus_start = np.sort(start[is_plus])
+    minus_end = np.sort(end[~is_plus])
+    keep = np.empty(len(candidates), dtype=bool)
+    # plus site: a minus site with end in (site.end, site.start + max_product_size]
+    keep[is_plus] = (np.searchsorted(minus_end, start[is_plus] + max_product_size, side="right")
+                     > np.searchsorted(minus_end, end[is_plus], side="right"))
+    # minus site: a partner p has p.end < site.end and p.start >= site.end - max_product_size,
+    # so necessarily site.end - max_product_size <= p.start < site.end
+    keep[~is_plus] = (np.searchsorted(plus_start, end[~is_plus], side="left")
+                      > np.searchsorted(plus_start, end[~is_plus] - max_product_size, side="left"))
+    return [c for c, k in zip(candidates, keep.tolist()) if k]
 
 
 def amplify(
@@ -285,9 +320,15 @@ def amplify(
 ) -> List[Product]:
     params = params or BindingParams()
     index = genome if isinstance(genome, GenomeIndex) else GenomeIndex(genome)
+    primer_of = {"F": forward.upper(), "R": reverse.upper()}
     products: List[Product] = []
     for contig in index.seqs:
-        sites = find_sites(contig, index, forward, "F", params) + find_sites(contig, index, reverse, "R", params)
+        candidates = (_site_candidates(contig, index, forward, "F", params)
+                      + _site_candidates(contig, index, reverse, "R", params))
+        if params.min_tm is not None:
+            # the duplex Tm dominates the runtime; skip it where no product is possible
+            candidates = _with_partner(candidates, max_product_size)
+        sites = _bind(candidates, primer_of, params)
         plus = sorted((s for s in sites if s.strand == "+"), key=lambda s: s.start)
         minus = sorted((s for s in sites if s.strand == "-"), key=lambda s: s.end)
         minus_ends = [s.end for s in minus]

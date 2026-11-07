@@ -76,6 +76,10 @@ class PrimerSelectionParams:
     seed_length: int = 4  # exact k-mer used to find candidate sites
     max_offtarget_product_size: int = 4000
     background_dir: Optional[Path] = None
+    # Background genomes may amplify if the amplicon is sequenced: "distinguish" accepts a
+    # background product that differs from every target amplicon by >= min_snps events;
+    # "reject" fails a pair on any background product.
+    background_products: str = "distinguish"
 
 
 @dataclass
@@ -108,6 +112,8 @@ class Config:
             raise ValueError("max_cores must be >= 1")
         if self.primer_selection.conservation not in {"all", "targets"}:
             raise ValueError("primer_selection.conservation must be 'all' or 'targets'")
+        if self.primer_selection.background_products not in {"distinguish", "reject"}:
+            raise ValueError("primer_selection.background_products must be 'distinguish' or 'reject'")
         ld = self.locus_discovery
         if ld.step < 1 or ld.window_size < 1:
             raise ValueError("locus_discovery.window_size and step must be positive")

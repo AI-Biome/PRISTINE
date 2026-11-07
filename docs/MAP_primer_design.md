@@ -11,7 +11,7 @@ how to run the pipeline and read the results.
 |---|---|---|
 | Target group | MAP, C-type (cattle) and S-type (sheep) strains | The primers must amplify every MAP lineage. A primer site missing in S-type strains means false negatives in sheep and goat samples. |
 | Non-targets (amplified, and told apart by sequence) | *M. avium* subsp. *hominissuis* (MAH), subsp. *avium* (MAA), subsp. *silvaticum* (MAS) | These are MAP's closest relatives and are common in feces, soil and water. MAP vs MAA is about 98.5 % ANI (skani, MAP E1 vs MAA DSM 44156), so 1800 bp amplicons can carry enough informative sites. |
-| Background (must not amplify) | *M. intracellulare*, *M. chimaera*, other MAC species, other mycobacteria (including *M. bovis*), high-GC actinobacteria, host genome | Any predicted product in these genomes rejects a primer pair. |
+| Background (should not amplify) | *M. intracellulare*, *M. chimaera*, other MAC species, other mycobacteria (including *M. bovis*), high-GC actinobacteria, host genome | Pairs without any product in these genomes are preferred. If there are too few, pairs whose background products differ from the MAP amplicon by at least `min_snps` are used; a product closer than that rejects a pair. |
 
 The classical MAP PCR targets (IS900, F57, ISMav2) are MAP-specific insertions and
 mostly multi-copy. PRISTINE finds something different: single-copy loci that are
@@ -19,12 +19,14 @@ present in all subspecies and carry MAP-specific SNPs and indels. Windows that h
 several places in a genome, such as IS900 copies, are removed on purpose. You should
 not expect IS900-like markers from this run, and none of its results replace them.
 
-Put *M. intracellulare* and *M. chimaera* in the background first (section 3). If
-almost every candidate pair is then rejected by the background screen, the conserved primer sites also bind in *M. intracellulare*. You
-can see this in `locus_design_log.csv` as `all passing pair(s) rejected by the
-background screen`, and in the `background Mycobacterium_intracellulare_*` entries of
-`Failure_Reasons`. In that case, move both species into `non-targets/` and rerun. The
-amplicon is then allowed to amplify them but must carry informative sites against them.
+Expect *M. intracellulare* to amplify. In a test run with 6 *M. intracellulare*
+genomes as background, every locus that passed on the MAP and *M. avium* genomes also
+gave a product in all of them, so all 3 selected loci came from the fallback. Their
+*M. intracellulare* products differed from the MAP amplicon by 12 to 33 events, or
+were too different to align. The `Background_Products` column of
+`selected_primers.csv` lists these differences per genome. Some of the best MAP vs
+MAA loci are closer to *M. intracellulare* than to MAA, so check that column, not
+just the MAA site count.
 
 ## 2. Requirements
 
@@ -312,7 +314,7 @@ machine, `max_loci_to_try: 30`, no background): 268 s on 1 core, 110 s with
 about 30 s of CPU time, so a design that tests a few hundred pairs needs a few CPU
 hours, divided by the number of cores. More cores help directly here (16 threads
 roughly halve the time of 8). The background screen adds the host chromosomes (about
-20 min to index the cattle genome, then a few minutes per surviving pair, shared over
+3–4 min to index the cattle genome, then a few minutes per surviving pair, shared over
 the cores) and the remote BLAST.
 
 ## 6. Read the results
@@ -322,7 +324,7 @@ All paths are below `output/Mycobacterium_avium_paratuberculosis/`.
 | File | What to check |
 |---|---|
 | `primers/selected_primers.csv` | The main result. For each pair, `Sites_In_Amplicon_External_<subsp>` should be at least 3 for MAH, MAA and MAS. Higher numbers make reads easier to classify. `On_Target_Product_Sizes` should be similar across all MAP genomes. A low `Min_On_Target_Site_Tm` means a weak primer site in some genome. |
-| `primers/locus_design_log.csv` | Why loci failed. If many say `rejected by the background screen`, apply the fallback in section 1. |
+| `primers/locus_design_log.csv` | Why loci failed, and which selected loci are fallback loci that amplify in the background. If many say `rejected by the background screen`, a background genome gives products within `min_snps` of the MAP amplicon; `Failure_Reasons` names it. |
 | `primers/primer_design_summary.csv` | Every candidate pair with its `Failure_Reasons`. |
 | `primers/amplicon_screen/amplicon_screen_summary.csv` | Organisms with a sequence close to the amplicon that are not in your input. Any `BLAST_Risk_Taxa` entry has to be explained or added as a non-target or background genome, followed by a rerun. |
 | `primers/amplicon_screen/background_identity.csv` | How similar each amplicon is to the background genomes. A background genome at or above the tolerated identity could be mistaken for MAP from the reads. |

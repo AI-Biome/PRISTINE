@@ -249,3 +249,59 @@ def test_parallel_run_matches_serial_run(dataset, tmp_path):
             pd.testing.assert_frame_equal(serial[key], parallel[key], check_like=False)
         else:
             assert serial[key] == parallel[key], key
+
+
+@needs_tools
+def test_background_products_distinguishable_by_sequence(dataset, tmp_path):
+    """A background genome that amplifies like a non-target (the primer sites are conserved)
+    is accepted with background_products: distinguish, because its amplicon carries the
+    non-target's informative sites, and fails every such pair with background_products: reject."""
+    root, files = dataset
+    bg = tmp_path / "background"
+    bg.mkdir()
+    shutil.copy(files["global_nt"][0], bg / "Bystander_1.fasta")  # a copy of Alienus_tertius
+
+    cfg = load_config(write_config(tmp_path / "config_d.yaml", root.name, "out_d", background=bg.name))
+    assert cfg.primer_selection.background_products == "distinguish"
+    summary = run_pipeline(cfg)
+    assert "Error" not in summary.columns, summary.to_string()
+    assert summary.iloc[0]["N_Selected_Primer_Sets"] >= 1
+    sel = pd.read_csv(cfg.output_dir / "Targetus_primus" / "primers" / "selected_primers.csv")
+    assert sel["Background_Products"].fillna("").str.contains("Bystander_1").all()
+
+    cfg_r = load_config(write_config(tmp_path / "config_r.yaml", root.name, "out_r", background=bg.name))
+    cfg_r.primer_selection.background_products = "reject"
+    summary_r = run_pipeline(cfg_r)
+    assert summary_r.iloc[0]["N_Selected_Primer_Sets"] == 0
+    pairs = pd.read_csv(cfg_r.output_dir / "Targetus_primus" / "primers" / "primer_design_summary.csv")
+    assert pairs["Failure_Reasons"].fillna("").str.contains("background Bystander_1").any()
+    log = pd.read_csv(cfg.output_dir / "Targetus_primus" / "primers" / "locus_design_log.csv")
+    assert log["Outcome"].str.contains("fallback: amplifies in the background").any()
+
+
+@needs_tools
+def test_loci_without_background_products_are_preferred(dataset, tmp_path):
+    """A locus that amplifies (distinguishably) in the background is only used when there
+    are not enough loci without background products."""
+    from pristine.seqio import write_fasta
+
+    root, files = dataset
+    cfg0 = load_config(write_config(tmp_path / "config_0.yaml", root.name, "out_0"))
+    run_pipeline(cfg0)
+    sel0 = pd.read_csv(cfg0.output_dir / "Targetus_primus" / "primers" / "selected_primers.csv")
+    top = sel0.iloc[0]["Locus"]
+    _, s, e = _locus_span(top)
+    # the non-target Alienus_tertius has the same coordinates (substitutions only)
+    alien = read_fasta_dict(files["global_nt"][0])["chr"]
+    bg = tmp_path / "background"
+    bg.mkdir()
+    write_fasta(bg / "Bystander_1.fasta", [("locus", alien[max(0, s - 100): e + 100])])
+
+    cfg = load_config(write_config(tmp_path / "config_p.yaml", root.name, "out_p", background=bg.name))
+    summary = run_pipeline(cfg)
+    assert summary.iloc[0]["N_Selected_Primer_Sets"] == cfg.snp_primer_design.snp_top_n
+    sel = pd.read_csv(cfg.output_dir / "Targetus_primus" / "primers" / "selected_primers.csv")
+    assert top not in set(sel["Locus"])
+    assert sel["Background_Products"].isna().all()
+    log = pd.read_csv(cfg.output_dir / "Targetus_primus" / "primers" / "locus_design_log.csv").set_index("Locus")
+    assert "kept in reserve" in log.loc[top, "Outcome"]

@@ -42,6 +42,8 @@
 <text x="102.0" y="226.0" font-size="11.5" fill="#ffffff" font-weight="bold" text-anchor="middle">2</text>
 <text x="122.0" y="219.0" font-size="13" fill="#1a1a1a" font-weight="bold" text-anchor="start">Genome-wide mapping</text>
 <text x="122.0" y="235.0" font-size="10.2" fill="#555555" font-weight="normal" text-anchor="start">windows aligned to every genome (minimap2)</text>
+<rect x="380.0" y="203.0" width="70.0" height="14" rx="7" fill="#ffffff" stroke="#2c6aa0" stroke-width="1"/>
+<text x="415.0" y="213.5" font-size="9" fill="#2c6aa0" font-weight="bold" text-anchor="middle">max_cores</text>
 <path d="M270.0,183.0 L270.0,197.5" fill="none" stroke="#3a3a3a" stroke-width="1.3" marker-end="url(#head)"/>
 <rect x="80.0" y="261.0" width="380" height="46" rx="6" fill="#ffffff" stroke="#2c6aa0" stroke-width="1.3"/>
 <circle cx="102.0" cy="284" r="11" fill="#2c6aa0"/>
@@ -79,7 +81,7 @@
 <circle cx="102.0" cy="738" r="11" fill="#7a4a96"/>
 <text x="102.0" y="742.0" font-size="11.5" fill="#ffffff" font-weight="bold" text-anchor="middle">8</text>
 <text x="122.0" y="735.0" font-size="13" fill="#1a1a1a" font-weight="bold" text-anchor="start">Background screen</text>
-<text x="122.0" y="751.0" font-size="10.2" fill="#555555" font-weight="normal" text-anchor="start">any product in a background genome rejects a pair</text>
+<text x="122.0" y="751.0" font-size="10.2" fill="#555555" font-weight="normal" text-anchor="start">a product too similar to the target amplicons rejects a pair</text>
 <rect x="380.0" y="719.0" width="70.0" height="14" rx="7" fill="#ffffff" stroke="#7a4a96" stroke-width="1"/>
 <text x="415.0" y="729.5" font-size="9" fill="#7a4a96" font-weight="bold" text-anchor="middle">max_cores</text>
 <path d="M270.0,699.0 L270.0,713.5" fill="none" stroke="#3a3a3a" stroke-width="1.3" marker-end="url(#head)"/>
@@ -87,7 +89,7 @@
 <circle cx="102.0" cy="800" r="11" fill="#7a4a96"/>
 <text x="102.0" y="804.0" font-size="11.5" fill="#ffffff" font-weight="bold" text-anchor="middle">9</text>
 <text x="122.0" y="797.0" font-size="13" fill="#1a1a1a" font-weight="bold" text-anchor="start">Locus selection</text>
-<text x="122.0" y="813.0" font-size="10.2" fill="#555555" font-weight="normal" text-anchor="start">best passing pair, one marker per region</text>
+<text x="122.0" y="813.0" font-size="10.2" fill="#555555" font-weight="normal" text-anchor="start">one marker per region; background-amplifying loci last</text>
 <path d="M270.0,761.0 L270.0,775.5" fill="none" stroke="#3a3a3a" stroke-width="1.3" marker-end="url(#head)"/>
 <rect x="80.0" y="839.0" width="380" height="46" rx="6" fill="#ffffff" stroke="#7a4a96" stroke-width="1.3"/>
 <circle cx="102.0" cy="862" r="11" fill="#7a4a96"/>
@@ -150,5 +152,5 @@
 <text x="262.0" y="1097.0" font-size="10.5" fill="#555555" font-weight="normal" text-anchor="start">Optional input</text>
 <rect x="366.0" y="1086.0" width="70.0" height="14" rx="7" fill="#ffffff" stroke="#555555" stroke-width="1"/>
 <text x="401.0" y="1096.5" font-size="9" fill="#555555" font-weight="bold" text-anchor="middle">max_cores</text>
-<text x="442.0" y="1097.0" font-size="10.5" fill="#555555" font-weight="normal" text-anchor="start">runs in max_cores processes (Linux)</text>
+<text x="442.0" y="1097.0" font-size="10.5" fill="#555555" font-weight="normal" text-anchor="start">runs in parallel, up to max_cores</text>
 </svg>

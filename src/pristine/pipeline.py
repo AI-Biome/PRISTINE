@@ -44,6 +44,9 @@ class PairEvaluation:
     passed: bool
     reasons: List[str] = field(default_factory=list)
     per_genome: Dict[str, GenomePcrResult] = field(default_factory=dict)
+    target_amplicons: List[str] = field(default_factory=list)  # set before the background screen
+    background_products: List[str] = field(default_factory=list)  # accepted (distinguishable) ones
+    background_sequences: Dict[str, str] = field(default_factory=dict)  # closest accepted product per genome
 
 
 def list_background(background_dir: Optional[Path]) -> List[Path]:
@@ -103,10 +106,69 @@ def _evaluate_job(job: Tuple[PrimerPair, str]) -> "PairEvaluation":
     return evaluate_pair(pair, s["genomes"], s["indexes"], s["cands"][locus], s["cfg"], s["binding"])
 
 
-def _amplify_job(job: Tuple[str, str]) -> list:
-    left, right = job
+def _background_job(job: Tuple[str, str, Sequence[str], bool]) -> Tuple[list, Optional[int], Optional[str]]:
+    left, right, amplicons, distinguish = job
     s = _SHARED
-    return amplify(s["bg_index"], left, right, s["max_product"], s["binding"])
+    return _screen_one(s["bg_index"], left, right, amplicons, distinguish, s["max_product"], s["binding"], s["cap"])
+
+
+def _screen_one(index: GenomeIndex, left: str, right: str, amplicons: Sequence[str], distinguish: bool,
+                max_product_size: int, binding: BindingParams, cap: int) -> Tuple[list, Optional[int], Optional[str]]:
+    """Products of one pair in one background genome and, with `distinguish`, the fewest
+    differences between any of them and the target amplicons, with that product's sequence."""
+    products = amplify(index, left, right, max_product_size, binding)
+    if not products or not distinguish:
+        return products, None, None
+    diffs = [(min_differences(seq, amplicons, cap), seq)
+             for seq in (product_sequence(index, pr) for pr in products)]
+    diff, seq = min(diffs, key=lambda d: d[0])
+    return products, diff, seq
+
+
+# ---- distinguishing background products by sequence ---------------------------------
+_KMER = 15
+MANY = 10**6  # "differs at many sites"; returned without aligning
+_ALIGNER = None
+
+
+def _aligner():
+    global _ALIGNER
+    if _ALIGNER is None:
+        from Bio.Align import PairwiseAligner
+        _ALIGNER = PairwiseAligner(mode="global", match_score=1, mismatch_score=-2,
+                                   open_gap_score=-4, extend_gap_score=-1)
+    return _ALIGNER
+
+
+def _events(a: str, b: str) -> int:
+    """Substitutions plus indel events (a gap run counts once) in a global alignment."""
+    aln = _aligner().align(a, b)[0]
+    ta, qa = aln.aligned
+    n = sum(x != y for (ts, te), (qs, qe) in zip(ta, qa) for x, y in zip(a[ts:te], b[qs:qe]))
+    n += sum(1 for k in range(1, len(ta)) if ta[k][0] != ta[k - 1][1] or qa[k][0] != qa[k - 1][1])
+    n += (ta[0][0] > 0 or qa[0][0] > 0) + (ta[-1][1] < len(a) or qa[-1][1] < len(b)) if len(ta) else 1
+    return n
+
+
+def min_differences(product: str, amplicons: Sequence[str], cap: int) -> int:
+    """Fewest differences (substitutions + indel events) between `product`, in either
+    orientation, and any of the target `amplicons`. `cap` is the decision threshold
+    (min_snps); the k-mer shortcut below only skips sequences far beyond it.
+
+    Sequences sharing fewer than half of their 15-mers are not aligned and reported as
+    MANY: fewer than `cap` events could only make them that different through indels of
+    hundreds of bases, which reads tell apart anyway."""
+    best = MANY
+    for seq in (product.upper(), revcomp(product.upper())):
+        kmers = {seq[i : i + _KMER] for i in range(len(seq) - _KMER + 1)}
+        for amp in amplicons:
+            if seq == amp:
+                return 0
+            amp_kmers = {amp[i : i + _KMER] for i in range(len(amp) - _KMER + 1)}
+            if not kmers or len(kmers & amp_kmers) < 0.5 * min(len(kmers), len(amp_kmers)):
+                continue
+            best = min(best, _events(seq, amp))
+    return best
 
 
 def evaluate_pair(
@@ -117,11 +179,31 @@ def evaluate_pair(
     cfg: Config,
     binding: BindingParams,
 ) -> PairEvaluation:
-    """In silico PCR of one pair against the group's genomes plus the informative-site criterion."""
+    """Informative-site criterion, then in silico PCR of one pair against the group's genomes.
+
+    The site criterion needs no PCR, so a pair that fails it is not amplified at all (its
+    product sizes stay empty in the reports)."""
     sel = cfg.primer_selection
     ev = PairEvaluation(pair=pair, passed=True)
     size_lo = int(cfg.min_product_size * 0.9)
     size_hi = int(cfg.max_product_size * 1.1)
+
+    external = {k: v for k, v in pair.snps_in_amplicon.items() if k.startswith("External_")}
+    min_snps = cfg.snp_primer_design.min_snps
+    if external:
+        lacking = [k for k, v in external.items() if v < min_snps]
+        if cfg.snp_primer_design.require_snps_for_all_nontargets and lacking:
+            ev.passed = False
+            ev.reasons.append("amplicon has < %d informative sites for %s" % (min_snps, ", ".join(lacking)))
+        elif not cfg.snp_primer_design.require_snps_for_all_nontargets and len(lacking) == len(external):
+            ev.passed = False
+            ev.reasons.append(f"amplicon has < {min_snps} informative sites for every non-target")
+    elif sum(pair.snps_in_amplicon.values()) < min_snps:
+        ev.passed = False
+        ev.reasons.append(f"amplicon has < {min_snps} informative sites")
+    if not ev.passed:
+        ev.reasons.append("in silico PCR skipped")
+        return ev
 
     for g in genomes:
         hit = locus.hits.get(g.genome_id)
@@ -145,20 +227,6 @@ def evaluate_pair(
             if not (size_lo <= pr.size <= size_hi):
                 ev.passed = False
                 ev.reasons.append(f"{g.genome_id}: product size {pr.size} outside {size_lo}-{size_hi}")
-
-    external = {k: v for k, v in pair.snps_in_amplicon.items() if k.startswith("External_")}
-    min_snps = cfg.snp_primer_design.min_snps
-    if external:
-        lacking = [k for k, v in external.items() if v < min_snps]
-        if cfg.snp_primer_design.require_snps_for_all_nontargets and lacking:
-            ev.passed = False
-            ev.reasons.append("amplicon has < %d informative sites for %s" % (min_snps, ", ".join(lacking)))
-        elif not cfg.snp_primer_design.require_snps_for_all_nontargets and len(lacking) == len(external):
-            ev.passed = False
-            ev.reasons.append(f"amplicon has < {min_snps} informative sites for every non-target")
-    elif sum(pair.snps_in_amplicon.values()) < min_snps:
-        ev.passed = False
-        ev.reasons.append(f"amplicon has < {min_snps} informative sites")
     return ev
 
 
@@ -168,39 +236,57 @@ def screen_background(
     binding: BindingParams,
     max_product_size: int,
     workers: int = 1,
+    mode: str = "reject",
+    min_snps: int = 3,
 ) -> None:
-    """One streaming pass over the background genomes; every product there fails the pair.
+    """One streaming pass over the background genomes.
 
-    Genomes are loaded one at a time; within a genome the still-passing pairs are split
-    over `workers` processes that share the genome's index."""
+    With mode "reject" any background product fails the pair. With "distinguish" a
+    product only fails it if it differs from every target amplicon (`ev.target_amplicons`)
+    by fewer than `min_snps` substitutions + indel events, i.e. if reads of it could be
+    mistaken for the target. Genomes are loaded one at a time; within a genome the
+    still-passing pairs are split over `workers` processes that share the genome's index."""
+    distinguish = mode == "distinguish"
     alive = [ev for ev in evaluations if ev.passed]
     log.info("Screening %d candidate pair(s) against %d background genome(s)", len(alive), len(background_files))
+    t_start = time.time()
     for i, path in enumerate(background_files, 1):
         alive = [ev for ev in alive if ev.passed]
         if not alive:
             break
         index = GenomeIndex(read_fasta_dict(path))
         bid = path.stem
-        jobs = [(ev.pair.left_seq, ev.pair.right_seq) for ev in alive]
+        jobs = [(ev.pair.left_seq, ev.pair.right_seq, ev.target_amplicons, distinguish) for ev in alive]
         pool = _fork_pool(min(workers, len(alive)))
         if pool is None:
-            results = [amplify(index, l, r, max_product_size, binding) for l, r in jobs]
+            results = [_screen_one(index, l, r, a, d, max_product_size, binding, min_snps) for l, r, a, d in jobs]
         else:
             index.warm(_seed_k(binding))  # build once here, not once per worker
-            _SHARED.update(bg_index=index, binding=binding, max_product=max_product_size)
+            _SHARED.update(bg_index=index, binding=binding, max_product=max_product_size, cap=min_snps)
             try:
                 with pool:
-                    results = list(pool.map(_amplify_job, jobs))
+                    results = list(pool.map(_background_job, jobs))
             finally:
                 _SHARED.pop("bg_index", None)
-        for ev, products in zip(alive, results):
-            if products:
-                ev.passed = False
+        for ev, (products, diff, closest) in zip(alive, results):
+            if not products:
+                continue
+            if distinguish and diff >= min_snps:
+                ev.background_products.append(
+                    f"{bid}:{len(products)} ({'many' if diff >= MANY else diff} differences)")
+                ev.background_sequences[bid] = closest
+                continue
+            ev.passed = False
+            ev.per_genome[bid] = classify_products(bid, products, None)
+            if distinguish:
+                ev.reasons.append(f"background {bid}: {len(products)} product(s), only {diff} difference(s) "
+                                  f"from a target amplicon (< min_snps={min_snps})")
+            else:
                 ev.reasons.append(f"background {bid}: {len(products)} product(s)")
-                ev.per_genome[bid] = classify_products(bid, products, None)
         if i % 25 == 0 or i == len(background_files):
             log.info("  background %d/%d screened, %d pair(s) still passing", i, len(background_files),
                      sum(ev.passed for ev in alive))
+    log.info("Background screen took %.0f s", time.time() - t_start)
 
 
 def refine_loci(
@@ -280,6 +366,7 @@ def _pair_record(ev: PairEvaluation, score: LocusScore, selected: bool) -> Dict[
                 if tm is not None:
                     weakest = tm if weakest is None else min(weakest, tm)
     rec["On_Target_Product_Sizes"] = " ".join(sizes)
+    rec["Background_Products"] = "; ".join(ev.background_products)
     rec["Min_On_Target_Site_Tm"] = round(weakest, 1) if weakest is not None else ""
     return rec
 
@@ -368,6 +455,7 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
 
     reference = choose_reference(genomes)
     candidates, genome_seqs = discover_loci(genomes, reference, out / "locus_discovery", cfg.locus_discovery, cfg.max_cores)
+    log.info("Locus discovery took %.0f s", time.time() - t0)
     if not candidates:
         raise RuntimeError("No single-copy loci shared by the required genomes were found")
 
@@ -462,6 +550,23 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
     n_try = min(sd.max_loci_to_try, len(ranked))
     next_rank = 0
 
+    reserve: List[Tuple[LocusScore, CandidateLocus, PairEvaluation]] = []
+
+    def select(sc: LocusScore, cand: CandidateLocus, chosen: PairEvaluation, note: str) -> None:
+        if len(selected) >= sd.snp_top_n:
+            locus_records[sc.locus]["Outcome"] += "; not selected, snp_top_n already reached"
+            return
+        # Overlapping windows often hold the same amplicon; compare amplicons on the reference.
+        amp = _reference_amplicon(chosen, reference.genome_id)
+        overlapping = [s.locus for s, _, e in selected if _regions_overlap(amp, _reference_amplicon(e, reference.genome_id))]
+        if overlapping:
+            locus_records[sc.locus]["Outcome"] = f"skipped: amplicon overlaps selected locus {overlapping[0]}"
+            return
+        locus_records[sc.locus]["Outcome"] = f"selected pair {chosen.pair.pair_index}{note}"
+        selected.append((sc, cand, chosen))
+        chosen_ids.add(id(chosen))
+        _write_selected(sc, cand, chosen, genome_seqs, primer_dir, amplicon_dir)
+
     # Rounds of: (A) design and screen loci against the group's own genomes, (B) one
     # background pass for the new survivors, (C) select. A round designs a few more loci
     # than still missing when a background screen may reject some; further rounds run
@@ -476,6 +581,7 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
         # per worker process), then bookkeeping in rank order. The walk stops exactly where
         # a one-locus-at-a-time loop would stop, so results do not depend on max_cores; a
         # parallel batch only wastes the in silico PCR of the loci after the stop point.
+        t_round, rank_before = time.time(), next_rank
         pool = _fork_pool(cfg.max_cores)
         batch_loci = 1 if pool is None else max(1, -(-cfg.max_cores // max(1, int(p3.get("PRIMER_NUM_RETURN", 5)))))
         try:
@@ -514,34 +620,53 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
             if pool is not None:
                 pool.shutdown()
         designed.extend(round_designed)
+        log.info("Design round: %d locus/loci tried, %d pair(s) tested in silico, %d new passing region(s), %.0f s",
+                 next_rank - rank_before, sum(len(e) for _, _, e in round_designed), new_passing, time.time() - t_round)
 
         # Phase B
         survivors = [ev for _, _, evs in round_designed for ev in evs if ev.passed]
         if background_files and survivors:
-            screen_background(survivors, background_files, binding, sel.max_offtarget_product_size, cfg.max_cores)
+            for ev in survivors:
+                ev.target_amplicons = sorted({product_sequence(genome_seqs[g.genome_id], pr).upper()
+                                              for g in genomes if g.is_target
+                                              for pr in ev.per_genome[g.genome_id].on_target})
+            screen_background(survivors, background_files, binding, sel.max_offtarget_product_size, cfg.max_cores,
+                              sel.background_products, sd.min_snps)
 
         # Phase C: the best surviving pair per locus, one locus per region, in rank order.
+        # Pairs without any background product are preferred; a locus whose passing pairs
+        # all amplify in the background (distinguishably) is kept in reserve.
         for sc, cand, evs in round_designed:
-            chosen = next((ev for ev in evs if ev.passed), None)
-            if chosen is None:
+            passing = [ev for ev in evs if ev.passed]
+            if not passing:
                 if any(r.startswith("background") for ev in evs for r in ev.reasons):
                     locus_records[sc.locus]["Outcome"] = "all passing pair(s) rejected by the background screen"
                 continue
-            if len(selected) >= sd.snp_top_n:
-                locus_records[sc.locus]["Outcome"] += "; not selected, snp_top_n already reached"
+            clean = next((ev for ev in passing if not ev.background_products), None)
+            if clean is None:
+                reserve.append((sc, cand, passing[0]))
+                locus_records[sc.locus]["Outcome"] = ("passing pair(s) amplify in the background, distinguishable "
+                                                      "by sequence; kept in reserve")
                 continue
-            # Overlapping windows often hold the same amplicon; compare amplicons on the reference.
-            amp = _reference_amplicon(chosen, reference.genome_id)
-            overlapping = [s.locus for s, _, e in selected if _regions_overlap(amp, _reference_amplicon(e, reference.genome_id))]
-            if overlapping:
-                locus_records[sc.locus]["Outcome"] = f"skipped: amplicon overlaps selected locus {overlapping[0]}"
-                continue
-            locus_records[sc.locus]["Outcome"] = f"selected pair {chosen.pair.pair_index}"
-            selected.append((sc, cand, chosen))
-            chosen_ids.add(id(chosen))
-            _write_selected(sc, cand, chosen, genome_seqs, primer_dir, amplicon_dir)
+            select(sc, cand, clean, "")
+
+    # Fallback: too few loci without background products. Fill the remaining slots with
+    # loci whose background products differ from the target amplicons by >= min_snps.
+    if len(selected) < sd.snp_top_n and reserve:
+        log.warning("Group %s: only %d locus/loci without background products; adding loci whose background "
+                    "products differ from the target amplicons by >= min_snps=%d (see Background_Products)",
+                    group, len(selected), sd.min_snps)
+        for sc, cand, ev in reserve:
+            select(sc, cand, ev, " (fallback: amplifies in the background, distinguishable by sequence)")
 
     _SHARED.clear()  # release the indexes before the next group
+
+    # Loci that amplify in the background: show how their amplicons differ from the target.
+    if cfg.make_plots:
+        for sc, cand, ev in selected:
+            if ev.background_sequences:
+                _plot_alignment(sc, ev, genomes, genome_seqs, reference.genome_id, primer_dir / "amplicon_alignments",
+                                sd.min_snps)
 
     # Pooling the selected pairs in one reaction: products formed by primers of two pairs.
     from . import multiplex
@@ -562,7 +687,10 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
     pair_records = [_pair_record(ev, sc, id(ev) in chosen_ids) for sc, _, evs in designed for ev in evs]
     pd.DataFrame(pair_records).to_csv(primer_dir / "primer_design_summary.csv", index=False)
     pd.DataFrame(list(locus_records.values())).to_csv(primer_dir / "locus_design_log.csv", index=False)
-    pd.DataFrame([r for r in pair_records if r["Selected"]]).to_csv(primer_dir / "selected_primers.csv", index=False)
+    # keep the header even when nothing was selected, so the file is still a valid table
+    all_pairs = pd.DataFrame(pair_records)
+    sel_df = all_pairs[all_pairs["Selected"]] if "Selected" in all_pairs else all_pairs
+    sel_df.to_csv(primer_dir / "selected_primers.csv", index=False)
 
     if cfg.make_plots and selected:
         from .plots import plot_snp_positions
@@ -653,6 +781,29 @@ def _record_design(
     else:
         d.record["Outcome"] = f"{len(d.pairs)} pair(s) designed, none passed in silico checks"
     return list(evs)
+
+
+def _plot_alignment(sc: LocusScore, ev: PairEvaluation, genomes: Sequence[Genome],
+                    genome_seqs: Mapping[str, Mapping[str, str]], reference_id: str, out_dir: Path,
+                    min_snps: int) -> None:
+    """Alignment figure (and difference table) of the target, non-target and background
+    amplicons of a selected pair, against the reference amplicon."""
+    from .plots import plot_amplicon_alignment
+
+    ref_res = ev.per_genome.get(reference_id)
+    if ref_res is None or not ref_res.on_target:
+        return
+    rows = []
+    for g in genomes:
+        res = ev.per_genome.get(g.genome_id)
+        for pr in (res.on_target if res else []):
+            rows.append((g.genome_id, "target" if g.is_target else "non-target", product_sequence(genome_seqs[g.genome_id], pr)))
+    rows += [(bid, "background", seq) for bid, seq in sorted(ev.background_sequences.items())]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    note = (f"background genomes amplify; each background product differs from every target amplicon "
+            f"by >= {min_snps} substitutions + indel events")
+    plot_amplicon_alignment(sc.locus, (reference_id, product_sequence(genome_seqs[reference_id], ref_res.on_target[0])),
+                            rows, out_dir / f"{sc.locus}.png", out_dir / f"{sc.locus}_differences.tsv", note)
 
 
 def _write_selected(

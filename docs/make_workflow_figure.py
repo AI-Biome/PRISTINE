@@ -31,12 +31,12 @@ STEPS = [  # (stage, title, detail)
     ("B", "Informative-site scoring", "substitutions and indel events vs. each non-target"),
     ("C", "Primer design", "conserved sites flanking the SNP-dense region (Primer3)"),
     ("D", "In silico PCR", "all input genomes; 3'-seeded sites, duplex Tm"),
-    ("D", "Background screen", "any product in a background genome rejects a pair"),
-    ("D", "Locus selection", "best passing pair, one marker per region"),
+    ("D", "Background screen", "a product too similar to the target amplicons rejects a pair"),
+    ("D", "Locus selection", "one marker per region; background-amplifying loci last"),
     ("D", "Multiplex check", "products formed by primers of two selected pairs"),
     ("D", "Amplicon similarity screen", "identity to background genomes and NCBI nt"),
 ]
-PARALLEL = {6, 7}   # steps run in max_cores worker processes (Linux)
+PARALLEL = {1, 6, 7}   # steps that use max_cores: concurrent minimap2 jobs, in silico PCR worker processes
 I_DESIGN, I_SELECT = 5, 8   # steps 5-7 repeat in rounds until snp_top_n loci are selected
 
 W, H = 720, 1080
@@ -202,7 +202,7 @@ add(f'<path d="M{lx},{ly - 3} H{lx + 26}" stroke="{ARROW}" stroke-width="1.3" st
 text(lx + 32, ly + 1, "Optional input", 10.5, MUTED, anchor="start")
 lx += 128
 tag(lx + 78, ly - 3, MUTED)
-text(lx + 84, ly + 1, "runs in max_cores processes (Linux)", 10.5, MUTED, anchor="start")
+text(lx + 84, ly + 1, "runs in parallel, up to max_cores", 10.5, MUTED, anchor="start")
 
 add("</svg>")
 svg[0] = svg[0].replace(f'height="{H}"', f'height="{ly + 20:.0f}"').replace(f'0 0 {W} {H}"', f'0 0 {W} {ly + 20:.0f}"')

@@ -14,6 +14,7 @@ import logging
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -243,11 +244,18 @@ def discover_loci(
     windows_fa = work_dir / "reference_windows.fasta"
     write_windows(windows, genome_seqs[reference.genome_id], windows_fa)
 
-    paf_by_genome: Dict[str, Dict[str, List[PafHit]]] = {}
-    for g in genomes:
+    # Several small minimap2 jobs at once use the cores better than one job with many
+    # threads: indexing a bacterial genome is single-threaded, and so is the PAF parsing.
+    jobs = max(1, min(len(genomes), threads // 2))
+    per_job = max(1, threads // jobs)
+
+    def map_one(g: Genome) -> Tuple[str, Dict[str, List[PafHit]]]:
         paf = work_dir / f"{g.genome_id}.paf"
-        run_minimap2(windows_fa, g.path, paf, threads, params.minimap2_preset)
-        paf_by_genome[g.genome_id] = parse_paf(paf)
+        run_minimap2(windows_fa, g.path, paf, per_job, params.minimap2_preset)
+        return g.genome_id, parse_paf(paf)
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        paf_by_genome: Dict[str, Dict[str, List[PafHit]]] = dict(pool.map(map_one, genomes))
     candidates = select_candidate_loci(windows, paf_by_genome, genomes, params)
     log.info("%d of %d windows are single-copy and present in the required genomes", len(candidates), len(windows))
     return candidates, genome_seqs
