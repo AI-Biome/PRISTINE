@@ -81,7 +81,7 @@ class PrimerSelectionParams:
 @dataclass
 class AmpliconScreenParams:
     background_identity: bool = True  # minimap2 identity of selected amplicons in background genomes
-    remote_blast: bool = False  # megablast of selected amplicons against NCBI nt (network, slow)
+    remote_blast: bool = True  # megablast of selected amplicons against NCBI nt (network, minutes; set false offline)
     blast_db: str = "nt"
     megablast: bool = True
     hitlist_size: int = 100
@@ -118,6 +118,15 @@ class Config:
             raise ValueError(
                 f"locus_discovery.window_size ({ld.window_size}) must be at least the largest "
                 f"PRIMER_PRODUCT_SIZE_RANGE upper bound ({max_product})"
+            )
+        sel = self.primer_selection
+        if sel.three_prime_region < (sel.three_prime_max_mismatches + 1) * sel.seed_length:
+            # Pigeonhole: m mismatches in an R-base region leave an exact k-mer only if R >= (m+1)*k.
+            raise ValueError(
+                f"primer_selection.three_prime_region ({sel.three_prime_region}) must be at least "
+                f"(three_prime_max_mismatches + 1) * seed_length "
+                f"({(sel.three_prime_max_mismatches + 1) * sel.seed_length}); otherwise the seed scan "
+                f"can miss binding sites with {sel.three_prime_max_mismatches} mismatch(es) in the 3' region"
             )
         if self.primer3_params.get("PRIMER_MAX_NS_ACCEPTED", 0) != 0:
             log.warning(
