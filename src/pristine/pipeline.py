@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import shutil
+import sys
 import time
 import traceback
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -67,6 +70,45 @@ def binding_params_from_config(cfg: Config) -> BindingParams:
                          min_tm=cfg.min_site_tm, thermo=thermo)
 
 
+# ---- parallel in silico PCR ---------------------------------------------------------
+# Worker processes are forked after the parent has stored the genome indexes (with their
+# k-mer lookups already built) in _SHARED, so every worker reads the same memory
+# copy-on-write instead of receiving or rebuilding multi-megabyte indexes. The work is
+# split by primer pair: the duplex-Tm cache is keyed by primer, so a worker that runs one
+# pair over all genomes gets the full benefit of the cache.
+_SHARED: Dict[str, object] = {}
+
+
+def _fork_pool_possible(workers: int) -> bool:
+    # fork is the only start method that shares the indexes without copying them; it is
+    # the default and safe on Linux, but not on macOS, where PRISTINE runs serially.
+    return workers >= 2 and sys.platform.startswith("linux")
+
+
+def _fork_pool(workers: int) -> Optional[ProcessPoolExecutor]:
+    """A fork-based process pool, or None (run serially) for one worker or off Linux."""
+    if not _fork_pool_possible(workers):
+        return None
+    return ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork"))
+
+
+def _seed_k(binding: BindingParams) -> int:
+    """k-mer size of the seed scan, as find_sites derives it for primers of normal length."""
+    return max(1, min(binding.seed_length, binding.three_prime_region))
+
+
+def _evaluate_job(job: Tuple[PrimerPair, str]) -> "PairEvaluation":
+    pair, locus = job
+    s = _SHARED
+    return evaluate_pair(pair, s["genomes"], s["indexes"], s["cands"][locus], s["cfg"], s["binding"])
+
+
+def _amplify_job(job: Tuple[str, str]) -> list:
+    left, right = job
+    s = _SHARED
+    return amplify(s["bg_index"], left, right, s["max_product"], s["binding"])
+
+
 def evaluate_pair(
     pair: PrimerPair,
     genomes: Sequence[Genome],
@@ -125,8 +167,12 @@ def screen_background(
     background_files: Sequence[Path],
     binding: BindingParams,
     max_product_size: int,
+    workers: int = 1,
 ) -> None:
-    """One streaming pass over the background genomes; every product there fails the pair."""
+    """One streaming pass over the background genomes; every product there fails the pair.
+
+    Genomes are loaded one at a time; within a genome the still-passing pairs are split
+    over `workers` processes that share the genome's index."""
     alive = [ev for ev in evaluations if ev.passed]
     log.info("Screening %d candidate pair(s) against %d background genome(s)", len(alive), len(background_files))
     for i, path in enumerate(background_files, 1):
@@ -135,8 +181,19 @@ def screen_background(
             break
         index = GenomeIndex(read_fasta_dict(path))
         bid = path.stem
-        for ev in alive:
-            products = amplify(index, ev.pair.left_seq, ev.pair.right_seq, max_product_size, binding)
+        jobs = [(ev.pair.left_seq, ev.pair.right_seq) for ev in alive]
+        pool = _fork_pool(min(workers, len(alive)))
+        if pool is None:
+            results = [amplify(index, l, r, max_product_size, binding) for l, r in jobs]
+        else:
+            index.warm(_seed_k(binding))  # build once here, not once per worker
+            _SHARED.update(bg_index=index, binding=binding, max_product=max_product_size)
+            try:
+                with pool:
+                    results = list(pool.map(_amplify_job, jobs))
+            finally:
+                _SHARED.pop("bg_index", None)
+        for ev, products in zip(alive, results):
             if products:
                 ev.passed = False
                 ev.reasons.append(f"background {bid}: {len(products)} product(s)")
@@ -385,6 +442,12 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
                     "genomes. Off-target products from other organisms in your samples cannot be detected. "
                     "Add genomes of host, contaminants and expected community members as background.", len(genomes))
     indexes = {gid: GenomeIndex(seqs) for gid, seqs in genome_seqs.items()}
+    if _fork_pool_possible(cfg.max_cores):
+        # Build the k-mer lookups before any worker is forked, so all workers share them.
+        # numpy releases the GIL while sorting, so threads build them in parallel.
+        with ThreadPoolExecutor(max_workers=cfg.max_cores) as tp:
+            list(tp.map(lambda ix: ix.warm(_seed_k(binding)), indexes.values()))
+        _SHARED.update(genomes=genomes, indexes=indexes, cands=cand_by_locus, cfg=cfg, binding=binding)
 
     p3 = dict(cfg.primer3_params)
     sd = cfg.snp_primer_design
@@ -409,32 +472,53 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
         new_passing = 0
         round_designed: List[Tuple[LocusScore, CandidateLocus, List[PairEvaluation]]] = []
 
-        # Phase A
-        while next_rank < n_try and new_passing < wanted:
-            sc = ranked[next_rank]
-            next_rank += 1
-            aln = aln_by_locus[sc.locus]
-            cand = cand_by_locus[sc.locus]
-            if cfg.locus_discovery.refine_with_mafft:
-                if sc.locus not in refined:
-                    # refine the next max_cores loci at once; mafft runs are independent
-                    batch = [s.locus for s in ranked[next_rank - 1 : min(n_try, next_rank - 1 + cfg.max_cores)]]
-                    refined.update(refine_loci(batch, aln_by_locus, genomes_by_id, out / "loci" / "mafft", cfg.max_cores))
-                aln, sc = refined[sc.locus]
-            ev_list = _design_locus(sc, aln, cand, genomes, genomes_by_id, indexes, cfg, binding, p3,
-                                    max_target_span, cons_dir, locus_records)
-            if ev_list is None:
-                continue
-            round_designed.append((sc, cand, ev_list))
-            if any(ev.passed for ev in ev_list) and not any(_windows_overlap(cand.window, w) for w in passing_windows):
-                passing_windows.append(cand.window)
-                new_passing += 1
+        # Phase A: primer3 for a batch of loci, in silico PCR of all their pairs (one pair
+        # per worker process), then bookkeeping in rank order. The walk stops exactly where
+        # a one-locus-at-a-time loop would stop, so results do not depend on max_cores; a
+        # parallel batch only wastes the in silico PCR of the loci after the stop point.
+        pool = _fork_pool(cfg.max_cores)
+        batch_loci = 1 if pool is None else max(1, -(-cfg.max_cores // max(1, int(p3.get("PRIMER_NUM_RETURN", 5)))))
+        try:
+            while next_rank < n_try and new_passing < wanted:
+                designs: List[_LocusDesign] = []
+                for r in range(next_rank, min(n_try, next_rank + batch_loci)):
+                    sc = ranked[r]
+                    aln = aln_by_locus[sc.locus]
+                    if cfg.locus_discovery.refine_with_mafft:
+                        if sc.locus not in refined:
+                            # refine the next max_cores loci at once; mafft runs are independent
+                            todo = [s.locus for s in ranked[r : min(n_try, r + cfg.max_cores)] if s.locus not in refined]
+                            refined.update(refine_loci(todo, aln_by_locus, genomes_by_id, out / "loci" / "mafft", cfg.max_cores))
+                        aln, sc = refined[sc.locus]
+                    designs.append(_design_pairs(sc, aln, cand_by_locus[sc.locus], genomes_by_id, cfg, p3, max_target_span))
+                jobs = [(pair, d.sc.locus) for d in designs for pair in d.pairs]
+                if pool is None:
+                    evs_flat = [evaluate_pair(pair, genomes, indexes, cand_by_locus[locus], cfg, binding) for pair, locus in jobs]
+                else:
+                    evs_flat = list(pool.map(_evaluate_job, jobs))
+                pos = 0
+                for d in designs:
+                    if new_passing >= wanted:
+                        break
+                    next_rank += 1
+                    evs = evs_flat[pos : pos + len(d.pairs)]
+                    pos += len(d.pairs)
+                    ev_list = _record_design(d, evs, cons_dir, locus_records)
+                    if ev_list is None:
+                        continue
+                    round_designed.append((d.sc, d.cand, ev_list))
+                    if any(ev.passed for ev in ev_list) and not any(_windows_overlap(d.cand.window, w) for w in passing_windows):
+                        passing_windows.append(d.cand.window)
+                        new_passing += 1
+        finally:
+            if pool is not None:
+                pool.shutdown()
         designed.extend(round_designed)
 
         # Phase B
         survivors = [ev for _, _, evs in round_designed for ev in evs if ev.passed]
         if background_files and survivors:
-            screen_background(survivors, background_files, binding, sel.max_offtarget_product_size)
+            screen_background(survivors, background_files, binding, sel.max_offtarget_product_size, cfg.max_cores)
 
         # Phase C: the best surviving pair per locus, one locus per region, in rank order.
         for sc, cand, evs in round_designed:
@@ -456,6 +540,17 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
             selected.append((sc, cand, chosen))
             chosen_ids.add(id(chosen))
             _write_selected(sc, cand, chosen, genome_seqs, primer_dir, amplicon_dir)
+
+    _SHARED.clear()  # release the indexes before the next group
+
+    # Pooling the selected pairs in one reaction: products formed by primers of two pairs.
+    from . import multiplex
+    cross = multiplex.cross_pair_products([(sc.locus, ev.pair.left_seq, ev.pair.right_seq) for sc, _, ev in selected],
+                                          indexes, binding, sel.max_offtarget_product_size)
+    cross.to_csv(primer_dir / "multiplex_check.csv", index=False)
+    for a, b in multiplex.conflicting_loci(cross):
+        log.warning("Selected loci %s and %s form cross-pair products; do not pool them in one reaction "
+                    "(see primers/multiplex_check.csv)", a, b)
 
     if len(selected) < sd.snp_top_n:
         log.warning("Group %s: only %d of snp_top_n=%d loci selected after trying %d locus/loci "
@@ -489,57 +584,75 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
     }
 
 
-def _design_locus(
+@dataclass
+class _LocusDesign:
+    """Primer3 result for one locus, before in silico PCR and before anything is written."""
+    sc: LocusScore
+    cand: CandidateLocus
+    record: Dict[str, object]
+    consensus: str
+    template: str
+    pairs: List[PrimerPair] = field(default_factory=list)
+
+
+def _design_pairs(
     sc: LocusScore,
     aln: Mapping[str, str],
     cand: CandidateLocus,
-    genomes: Sequence[Genome],
     genomes_by_id: Mapping[str, Genome],
-    indexes: Mapping[str, GenomeIndex],
     cfg: Config,
-    binding: BindingParams,
     p3: Mapping[str, object],
     max_target_span: int,
-    cons_dir: Path,
-    locus_records: Dict[str, Dict[str, object]],
-) -> Optional[List[PairEvaluation]]:
-    """Primer3 design for one locus and in silico PCR of every pair on the group's genomes.
-
-    Returns the pair evaluations, or None when no pair could be designed (the reason is
-    recorded in `locus_records`)."""
+) -> _LocusDesign:
+    """Primer3 design for one locus. No pairs means none could be designed; the reason is in
+    `record["Outcome"]`."""
     sel = cfg.primer_selection
     sd = cfg.snp_primer_design
     cons_ids = list(aln) if sel.conservation == "all" else [gid for gid in aln if genomes_by_id[gid].is_target]
     template = masked_template([aln[g] for g in cons_ids])
-    write_fasta(cons_dir / f"{sc.locus}.fasta", [(f"{sc.locus} IUPAC consensus (gaps ignored)", iupac_consensus(list(aln.values())))])
-    write_fasta(cons_dir / f"{sc.locus}.masked_template.fasta", [(f"{sc.locus} N-masked design template", template)])
-
     lrec: Dict[str, object] = {"Locus": sc.locus, "Combined_Score": sc.combined_score,
                                "Conserved_Fraction": 1 - template.count("N") / len(template)}
-    locus_records[sc.locus] = lrec
+    d = _LocusDesign(sc, cand, lrec, iupac_consensus(list(aln.values())), template)
     target = choose_target_region(sc.positions_by_key(), sd.snp_window_size, sd.min_snps, max_target_span, len(template))
     if target is None:
         lrec["Outcome"] = f"no window of {sd.snp_window_size} bp with >= {sd.min_snps} informative sites"
-        return None
+        return d
     lrec["Target_Start"], lrec["Target_Length"] = target
     try:
         pairs, explain = design_primers(sc.locus, template, target, p3)
     except (OSError, RuntimeError) as e:
         lrec["Outcome"] = f"primer3 error: {e}"
-        return None
+        return d
     if not pairs:
         lrec["Outcome"] = f"primer3 found no pair ({explain})"
-        return None
-    evs = []
+        return d
     for pair in pairs:
         pair.snps_in_amplicon = sc.count_in_region(pair.amplicon_start, pair.amplicon_end)
-        evs.append(evaluate_pair(pair, genomes, indexes, cand, cfg, binding))
+    d.pairs = list(pairs)
+    return d
+
+
+def _record_design(
+    d: _LocusDesign,
+    evs: Sequence[PairEvaluation],
+    cons_dir: Path,
+    locus_records: Dict[str, Dict[str, object]],
+) -> Optional[List[PairEvaluation]]:
+    """Write the consensus files and the log record of a locus the design walk reached.
+
+    Returns the pair evaluations, or None when no pair could be designed."""
+    locus = d.sc.locus
+    write_fasta(cons_dir / f"{locus}.fasta", [(f"{locus} IUPAC consensus (gaps ignored)", d.consensus)])
+    write_fasta(cons_dir / f"{locus}.masked_template.fasta", [(f"{locus} N-masked design template", d.template)])
+    locus_records[locus] = d.record
+    if not d.pairs:
+        return None
     n_pass = sum(ev.passed for ev in evs)
     if n_pass:
-        lrec["Outcome"] = f"{n_pass} of {len(pairs)} pair(s) passed on the input genomes"
+        d.record["Outcome"] = f"{n_pass} of {len(d.pairs)} pair(s) passed on the input genomes"
     else:
-        lrec["Outcome"] = f"{len(pairs)} pair(s) designed, none passed in silico checks"
-    return evs
+        d.record["Outcome"] = f"{len(d.pairs)} pair(s) designed, none passed in silico checks"
+    return list(evs)
 
 
 def _write_selected(

@@ -135,6 +135,13 @@ class GenomeIndex:
         hi = np.searchsorted(sorted_codes, code32, side="right")
         return order[lo:hi].astype(np.int64)
 
+    def warm(self, k: int) -> "GenomeIndex":
+        """Build the k-mer lookup of every contig now (e.g. before forking worker processes,
+        so the workers share it copy-on-write instead of each building its own)."""
+        for contig in self.seqs:
+            self.positions_of(contig, k, 0)
+        return self
+
     def __getitem__(self, contig: str) -> str:
         return self.seqs[contig]
 

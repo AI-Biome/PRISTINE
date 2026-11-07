@@ -205,3 +205,47 @@ def test_nontarget_lacking_locus_with_require_in_nontargets_false(tmp_path):
         prods = amplify(read_fasta_dict(nt), r["LEFT_PRIMER"], r["RIGHT_PRIMER"], 4000, BindingParams(min_tm=49.0))
         if _locus_span(r["Locus"])[1] >= 16_000:
             assert prods == [], (r["Locus"], prods)
+
+
+@needs_tools
+def test_parallel_run_matches_serial_run(dataset, tmp_path):
+    """max_cores only changes speed: the parallel in silico PCR (batched loci, pair-level
+    worker processes, parallel background screen) must give the same tables and files as a
+    one-core run."""
+    from pristine.seqio import write_fasta
+
+    root, files = dataset
+    # A background genome holding the best passing locus rejects it, so the background
+    # screen has work and design needs a second round.
+    cfg0 = load_config(write_config(tmp_path / "config_0.yaml", root.name, "out_0"))
+    summary0 = run_pipeline(cfg0)
+    reference = summary0.iloc[0]["Reference"]
+    sel0 = pd.read_csv(cfg0.output_dir / "Targetus_primus" / "primers" / "selected_primers.csv")
+    _, s, e = _locus_span(sel0.iloc[0]["Locus"])
+    ref = read_fasta_dict(next(p for ps in files.values() for p in ps if p.stem == reference))["chr"]
+    bg = tmp_path / "background"
+    bg.mkdir()
+    write_fasta(bg / "Contaminant_1.fasta", [("locus", ref[max(0, s - 100): e + 100])])
+    write_fasta(bg / "Unrelated_1.fasta", [("chr", ref[::-1])])
+
+    outputs = {}
+    for cores in (1, 4):
+        cfg = load_config(write_config(tmp_path / f"config_{cores}.yaml", root.name, f"out_{cores}", background=bg.name))
+        cfg.max_cores = cores
+        summary = run_pipeline(cfg)
+        assert "Error" not in summary.columns, summary.to_string()
+        out = cfg.output_dir / "Targetus_primus"
+        outputs[cores] = {
+            "summary": summary.drop(columns=["Seconds"]),
+            **{name: pd.read_csv(out / "primers" / name)
+               for name in ("primer_design_summary.csv", "locus_design_log.csv", "selected_primers.csv",
+                            "multiplex_check.csv")},
+            "consensus": sorted(p.name for p in (out / "informative_loci" / "consensus_sequences").iterdir()),
+        }
+    serial, parallel = outputs[1], outputs[4]
+    assert serial["primer_design_summary.csv"]["Failure_Reasons"].fillna("").str.contains("background").any()
+    for key in serial:
+        if isinstance(serial[key], pd.DataFrame):
+            pd.testing.assert_frame_equal(serial[key], parallel[key], check_like=False)
+        else:
+            assert serial[key] == parallel[key], key

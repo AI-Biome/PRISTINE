@@ -9,9 +9,9 @@ how to run the pipeline and read the results.
 
 | Role in PRISTINE | Taxa | Why |
 |---|---|---|
-| **Target group** | MAP, C-type (cattle) and S-type (sheep) strains | The primers must amplify every MAP lineage. A primer site missing in S-type strains means false negatives in sheep and goat samples. |
-| **Non-targets** (amplified, and told apart by sequence) | *M. avium* subsp. *hominissuis* (MAH), subsp. *avium* (MAA), subsp. *silvaticum* (MAS) | These are MAP's closest relatives and are common in feces, soil and water. MAP vs MAA is about 98.5 % ANI (skani, MAP E1 vs MAA DSM 44156), so 1800 bp amplicons can carry enough informative sites. |
-| **Background** (must not amplify) | *M. intracellulare*, *M. chimaera*, other MAC species, other mycobacteria (including *M. bovis*), high-GC actinobacteria, host genome | Any predicted product in these genomes rejects a primer pair. |
+| Target group | MAP, C-type (cattle) and S-type (sheep) strains | The primers must amplify every MAP lineage. A primer site missing in S-type strains means false negatives in sheep and goat samples. |
+| Non-targets (amplified, and told apart by sequence) | *M. avium* subsp. *hominissuis* (MAH), subsp. *avium* (MAA), subsp. *silvaticum* (MAS) | These are MAP's closest relatives and are common in feces, soil and water. MAP vs MAA is about 98.5 % ANI (skani, MAP E1 vs MAA DSM 44156), so 1800 bp amplicons can carry enough informative sites. |
+| Background (must not amplify) | *M. intracellulare*, *M. chimaera*, other MAC species, other mycobacteria (including *M. bovis*), high-GC actinobacteria, host genome | Any predicted product in these genomes rejects a primer pair. |
 
 The classical MAP PCR targets (IS900, F57, ISMav2) are MAP-specific insertions and
 mostly multi-copy. PRISTINE finds something different: single-copy loci that are
@@ -19,9 +19,8 @@ present in all subspecies and carry MAP-specific SNPs and indels. Windows that h
 several places in a genome, such as IS900 copies, are removed on purpose. You should
 not expect IS900-like markers from this run, and none of its results replace them.
 
-**Fallback for *M. intracellulare* / *M. chimaera*.** Start with them in the
-background (section 3). If almost every candidate pair is then rejected by the
-background screen, the conserved primer sites also bind in *M. intracellulare*. You
+Put *M. intracellulare* and *M. chimaera* in the background first (section 3). If
+almost every candidate pair is then rejected by the background screen, the conserved primer sites also bind in *M. intracellulare*. You
 can see this in `locus_design_log.csv` as `all passing pair(s) rejected by the
 background screen`, and in the `background Mycobacterium_intracellulare_*` entries of
 `Failure_Reasons`. In that case, move both species into `non-targets/` and rerun. The
@@ -90,15 +89,15 @@ On 2026-11-07, NCBI RefSeq had 28 complete MAP genomes, 42 MAH, 4 MAA, 1 MAS and
 
 Review `lists/MAP.tsv` before downloading:
 
-- **Keep both MAP lineages.** Check the strain names for S-type (sheep) isolates. If
+- Keep both MAP lineages. Check the strain names for S-type (sheep) isolates. If
   the complete genomes contain none, add S-type genomes from a lower assembly level
   (repeat `lst` with `--assembly-level complete,chromosome,scaffold` and pick them by
   strain name). Draft assemblies are accepted. Their only cost is that loci split
   across contigs are dropped.
-- **Keep both K-10 assemblies or either one.** K-10 is the MAP type genome and appears
-  twice (`GCF_000007865.1` and the PacBio re-sequencing `GCF_025665475.1`). Duplicates
-  do no harm.
-- **Don't remove a genome to rescue a design.** Each target genome you drop is a MAP
+- K-10 is the MAP type genome and appears
+  twice (`GCF_000007865.1` and the PacBio re-sequencing `GCF_025665475.1`). Keeping
+  both does no harm.
+- Don't remove a target genome to rescue a design. Each one you drop is a MAP
   lineage the primers are no longer tested on.
 
 ### 3.2 Targets and non-targets
@@ -156,18 +155,24 @@ All accessions above were checked against NCBI on 2026-11-07. The list is a
 starting point. Add any taxa you find in 16S profiles of the actual samples (fecal
 or milk community, kit and lab contaminants).
 
-**Host genome.** The in silico PCR loads one background file at a time and builds a
-k-mer index of it in memory. A whole 2.8 Gb mammalian genome in one file would need
+The host genome needs splitting. The in silico PCR loads one background file at a
+time and builds a k-mer index of it in memory. A whole 2.8 Gb mammalian genome in one file would need
 tens of GB of RAM, so split it into one file per chromosome. The largest bovine
-chromosome then needs a few GB. I have not timed this step at mammalian scale, so
-watch the `background i/N screened` lines in `output/pristine.log`.
+chromosome then needs about 3 GB (measured on a 160 Mb test chromosome).
+
+Background genomes are screened in file-name order, and a pair rejected in one genome
+is not screened in the rest. The host files are therefore named `host_*`: lower-case
+names sort after the capitalised species files, so the close relatives (*M.
+intracellulare* etc.), which reject most pairs, are screened first and the slow
+mammalian chromosomes only see the few pairs that are left. Watch the
+`background i/N screened` lines in `output/pristine.log`.
 
 ```bash
 ds datasets download genome taxon "Bos taurus" --reference --include genome \
    --filename dl/bos.zip --no-progressbar             # GCF_002263795.3, ~2.8 Gb
 pixi exec -s unzip unzip -q -o dl/bos.zip -d dl/bos
 awk '/^>/{ id=substr($1,2)
-           f = (id ~ /^NC_/) ? "background/Bos_taurus_" id ".fasta" : "background/Bos_taurus_unplaced.fasta" }
+           f = (id ~ /^NC_/) ? "background/host_Bos_taurus_" id ".fasta" : "background/host_Bos_taurus_unplaced.fasta" }
      { print > f }' dl/bos/ncbi_dataset/data/GCF_*/*.fna
 rm -rf dl/bos dl/bos.zip
 ```
@@ -198,7 +203,7 @@ What to look for:
 
 - The MAP vs MAP minimum should be clearly higher than the MAP vs MAH and MAP vs MAA
   maximums. MAP is near-clonal.
-- If the **max** of a MAP-vs-other pair reaches the MAP-vs-MAP range, that genome is
+- If the maximum of a MAP-vs-other pair reaches the MAP-vs-MAP range, that genome is
   probably mislabelled. Find it with
   `awk -F'\t' '$3>99.5' qc/ani.tsv | grep paratuberculosis | grep non-targets`.
   Move or delete the file and look up its accession in `genome_map.tsv`.
@@ -216,7 +221,7 @@ snp_avg_prop_threshold: 0.005
 
 primer3:
   global_params:
-    PRIMER_NUM_RETURN: 10         # default 5; with many non-targets and background genomes, more pairs get rejected
+    PRIMER_NUM_RETURN: 5          # candidate pairs per locus; each one costs an in silico PCR over all genomes
     PRIMER_MIN_SIZE: 18
     PRIMER_OPT_SIZE: 20
     PRIMER_MAX_SIZE: 25
@@ -297,9 +302,18 @@ pixi run --manifest-path $P pristine --config config.yaml --threads 6 2>&1 | tee
 ```
 
 To get a quick yield check before the full screen, run once with
-`background_dir: null` and `remote_blast: false`. Then rerun with both turned on. The
-design part is fast. Most of the extra time comes from the host chromosomes and the
-remote BLAST.
+`background_dir: null` and `remote_blast: false`. Then rerun with both turned on.
+
+Most of the runtime goes into the in silico PCR of each candidate pair against every
+input genome. It runs in `max_cores` worker processes, one pair per worker, on Linux;
+on macOS it runs on one core. Measured on 14 real genomes (8 MAP, 6 MAH; 8-thread
+machine, `max_loci_to_try: 30`, no background): 268 s on 1 core, 110 s with
+`--threads 6`, identical results. With the full set (~75 input genomes) one pair takes
+about 30 s of CPU time, so a design that tests a few hundred pairs needs a few CPU
+hours, divided by the number of cores. More cores help directly here (16 threads
+roughly halve the time of 8). The background screen adds the host chromosomes (about
+20 min to index the cattle genome, then a few minutes per surviving pair, shared over
+the cores) and the remote BLAST.
 
 ## 6. Read the results
 
@@ -319,7 +333,7 @@ Before ordering primers:
 1. Run Primer-BLAST on the shortlisted pairs against nt, and against the *Bos taurus*
    RefSeq genome if the host was not in `background/`. The sequences are in
    `primers/<locus>_primers.fasta`.
-2. Order 2–3 pairs from different loci, not just the top-scoring one.
+2. Order the top 2–3 pairs, each from a different locus.
 3. Wet-lab panel: MAP C-type and S-type DNA, MAH, MAA, *M. intracellulare*, a MAP-free
    bovine fecal DNA extract, and a no-template control. Run a gradient PCR around the
    55 °C design annealing temperature. The template is high-GC, so test DMSO or

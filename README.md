@@ -120,7 +120,7 @@ All relative paths are resolved relative to the directory of the config file.
 ```yaml
 input_dir: "data/raw_genomes/"
 output_dir: "output/"
-max_cores: 8                      # minimap2 threads; also how many loci mafft re-aligns at once
+max_cores: 8                      # minimap2 threads, mafft loci at once, and in silico PCR worker processes (Linux)
 snp_avg_prop_threshold: 0.005     # loci scoring below this are not copied to informative_loci/
 
 primer3:
@@ -260,6 +260,14 @@ are enumerated. A pair is accepted only if
 With `require_in_nontargets: false`, a non-target genome that lacks the locus must
 give no product at all; its absence already tells it apart.
 
+This step dominates the runtime. On Linux it runs in `max_cores` worker processes,
+one candidate pair per worker; the genome k-mer indexes are built once and shared,
+and Tm values are cached because related genomes repeat the same binding sites.
+Primer3 is run on a few loci at a time so that every worker has a pair, and the
+results are taken in rank order, so the output does not depend on `max_cores`. The
+background screen splits the pairs still passing over the workers in the same way.
+On macOS the step runs on one core.
+
 ### 7. Background screen
 
 All pairs that survived step 6 are screened in one streaming
@@ -312,6 +320,7 @@ output/
         ├── selected_primers.csv         the accepted primer pair per locus  <-- main result
         ├── primer_design_summary.csv    every candidate pair with pass/fail reasons
         ├── locus_design_log.csv         per locus: target region and outcome
+        ├── multiplex_check.csv          products formed by primers of two different selected pairs (pooling)
         ├── <locus>_primers.fasta        LEFT/RIGHT sequences of accepted pairs
         ├── amplicons/<locus>_amplicons.fasta  predicted amplicon of every genome, locus orientation
         └── amplicon_screen/
