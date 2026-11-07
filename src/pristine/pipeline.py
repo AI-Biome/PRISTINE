@@ -91,7 +91,9 @@ def evaluate_pair(
             ev.passed = False
             ev.reasons.append(f"{g.genome_id}: {len(res.off_target)} off-target product(s)")
         n_on = len(res.on_target)
-        if (g.is_target or sel.conservation == "all") and n_on == 0:
+        # A non-target without the locus (require_in_nontargets: false) must give no product
+        # at all; any product it gives is off-target and already failed above.
+        if (g.is_target or (sel.conservation == "all" and hit is not None)) and n_on == 0:
             ev.passed = False
             ev.reasons.append(f"{g.genome_id}: no product at locus")
         if n_on > 1:
@@ -144,17 +146,32 @@ def screen_background(
                      sum(ev.passed for ev in alive))
 
 
-def refine_locus(locus: str, aln: Mapping[str, str], genomes_by_id: Mapping[str, Genome], work: Path):
-    """Re-align the ungapped locus sequences with mafft (only for loci that reach primer design)."""
+def refine_loci(
+    loci: Sequence[str],
+    aln_by_locus: Mapping[str, Mapping[str, str]],
+    genomes_by_id: Mapping[str, Genome],
+    work: Path,
+    threads: int,
+) -> Dict[str, Tuple[Dict[str, str], LocusScore]]:
+    """Re-align the ungapped sequences of several loci with mafft, `threads` loci at a time.
+
+    Only loci that reach primer design are refined. A locus whose mafft run fails keeps
+    its minimap2-based alignment."""
     (work / "unaligned").mkdir(parents=True, exist_ok=True)
-    unaligned = work / "unaligned" / f"{locus}.fasta"
-    write_fasta(unaligned, ((gid, s.replace("-", "")) for gid, s in aln.items()))
-    (_, out_path), = align_loci([unaligned], work, threads=1)
-    if out_path is None:
-        log.warning("mafft refinement failed for %s; using the minimap2-based alignment", locus)
-        return dict(aln), score_alignment(locus, aln, genomes_by_id)
-    refined = read_fasta_dict(out_path)
-    return refined, score_alignment(locus, refined, genomes_by_id)
+    inputs = []
+    for locus in loci:
+        unaligned = work / "unaligned" / f"{locus}.fasta"
+        write_fasta(unaligned, ((gid, s.replace("-", "")) for gid, s in aln_by_locus[locus].items()))
+        inputs.append(unaligned)
+    out: Dict[str, Tuple[Dict[str, str], LocusScore]] = {}
+    for locus, (_, out_path) in zip(loci, align_loci(inputs, work, threads=threads)):
+        if out_path is None:
+            log.warning("mafft refinement failed for %s; using the minimap2-based alignment", locus)
+            aln = dict(aln_by_locus[locus])
+        else:
+            aln = read_fasta_dict(out_path)
+        out[locus] = (aln, score_alignment(locus, aln, genomes_by_id))
+    return out
 
 
 def _windows_overlap(a: Window, b: Window) -> bool:
@@ -249,6 +266,7 @@ def amplicon_screen(
 
     if asp.background_identity and background_files:
         bg = blast.background_identity(amplicons_fa, background_files, out_dir / "tmp", cfg.max_cores, tolerated)
+        shutil.rmtree(out_dir / "tmp", ignore_errors=True)
         bg.to_csv(out_dir / "background_identity.csv", index=False)
         best = bg.sort_values("Pct_Identity", ascending=False).drop_duplicates("Locus")
         summary = summary.merge(best[["Locus", "Background_Genome", "Pct_Identity"]].rename(
@@ -375,92 +393,74 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
     locus_records: Dict[str, Dict[str, object]] = {}
     designed: List[Tuple[LocusScore, CandidateLocus, List[PairEvaluation]]] = []
     passing_windows: List[Window] = []
-    # Design a few more loci than requested when a background screen may still reject some.
-    wanted = sd.snp_top_n * (2 if background_files else 1)
-
-    # Phase A: design and screen against the group's own genomes.
-    tried = 0
-    for sc in ranked:
-        if tried >= sd.max_loci_to_try or len(passing_windows) >= wanted:
-            break
-        tried += 1
-        aln = aln_by_locus[sc.locus]
-        cand = cand_by_locus[sc.locus]
-        if cfg.locus_discovery.refine_with_mafft:
-            aln, sc = refine_locus(sc.locus, aln, genomes_by_id, out / "loci" / "mafft")
-        cons_ids = list(aln) if sel.conservation == "all" else [gid for gid in aln if genomes_by_id[gid].is_target]
-        template = masked_template([aln[g] for g in cons_ids])
-        write_fasta(cons_dir / f"{sc.locus}.fasta", [(f"{sc.locus} IUPAC consensus (gaps ignored)", iupac_consensus(list(aln.values())))])
-        write_fasta(cons_dir / f"{sc.locus}.masked_template.fasta", [(f"{sc.locus} N-masked design template", template)])
-
-        lrec: Dict[str, object] = {"Locus": sc.locus, "Combined_Score": sc.combined_score,
-                                   "Conserved_Fraction": 1 - template.count("N") / len(template)}
-        locus_records[sc.locus] = lrec
-        target = choose_target_region(sc.positions_by_key(), sd.snp_window_size, sd.min_snps, max_target_span, len(template))
-        if target is None:
-            lrec["Outcome"] = f"no window of {sd.snp_window_size} bp with >= {sd.min_snps} informative sites"
-            continue
-        lrec["Target_Start"], lrec["Target_Length"] = target
-        try:
-            pairs, explain = design_primers(sc.locus, template, target, p3)
-        except (OSError, RuntimeError) as e:
-            lrec["Outcome"] = f"primer3 error: {e}"
-            continue
-        if not pairs:
-            lrec["Outcome"] = f"primer3 found no pair ({explain})"
-            continue
-        evs = []
-        for pair in pairs:
-            pair.snps_in_amplicon = sc.count_in_region(pair.amplicon_start, pair.amplicon_end)
-            evs.append(evaluate_pair(pair, genomes, indexes, cand, cfg, binding))
-        designed.append((sc, cand, evs))
-        n_pass = sum(ev.passed for ev in evs)
-        if n_pass:
-            lrec["Outcome"] = f"{n_pass} of {len(pairs)} pair(s) passed on the input genomes"
-            if not any(_windows_overlap(cand.window, w) for w in passing_windows):
-                passing_windows.append(cand.window)
-        else:
-            lrec["Outcome"] = f"{len(pairs)} pair(s) designed, none passed in silico checks"
-
-    # Phase B: one pass over the background genomes for all surviving pairs.
-    survivors = [ev for _, _, evs in designed for ev in evs if ev.passed]
-    if background_files and survivors:
-        screen_background(survivors, background_files, binding, sel.max_offtarget_product_size)
-
-    # Phase C: pick the best surviving pair per locus, one locus per region.
     selected: List[Tuple[LocusScore, CandidateLocus, PairEvaluation]] = []
     chosen_ids = set()
-    for sc, cand, evs in designed:
-        if len(selected) >= sd.snp_top_n:
-            break
-        chosen = next((ev for ev in evs if ev.passed), None)
-        if chosen is None:
-            if any(r.startswith("background") for ev in evs for r in ev.reasons):
-                locus_records[sc.locus]["Outcome"] = "all passing pair(s) rejected by the background screen"
-            continue
-        # Overlapping windows often hold the same amplicon; compare amplicons on the reference.
-        amp = _reference_amplicon(chosen, reference.genome_id)
-        overlapping = [s.locus for s, _, e in selected if _regions_overlap(amp, _reference_amplicon(e, reference.genome_id))]
-        if overlapping:
-            locus_records[sc.locus]["Outcome"] = f"skipped: amplicon overlaps selected locus {overlapping[0]}"
-            continue
-        locus_records[sc.locus]["Outcome"] = f"selected pair {chosen.pair.pair_index}"
-        selected.append((sc, cand, chosen))
-        chosen_ids.add(id(chosen))
-        p = chosen.pair
-        write_fasta(primer_dir / f"{sc.locus}_primers.fasta",
-                    [(f"{sc.locus}_LEFT", p.left_seq), (f"{sc.locus}_RIGHT", p.right_seq)])
-        # Amplicons are written in the orientation of the reference locus, so that
-        # they can be aligned or used as a reference database directly.
-        amp_records = []
-        for gid, res in chosen.per_genome.items():
-            hit = cand.hits.get(gid)
-            for pr in res.on_target:
-                seq = product_sequence(genome_seqs[gid], pr)
-                if hit is not None and hit.strand == "-":
-                    seq = revcomp(seq)
-                amp_records.append((f"{gid} {pr.contig}:{pr.start}-{pr.end} strand={hit.strand if hit else '?'} size={pr.size}", seq))
-        write_fasta(amplicon_dir / f"{sc.locus}_amplicons.fasta", amp_records)
+    refined: Dict[str, Tuple[Dict[str, str], LocusScore]] = {}
+    n_try = min(sd.max_loci_to_try, len(ranked))
+    next_rank = 0
+
+    # Rounds of: (A) design and screen loci against the group's own genomes, (B) one
+    # background pass for the new survivors, (C) select. A round designs a few more loci
+    # than still missing when a background screen may reject some; further rounds run
+    # until snp_top_n loci are selected or max_loci_to_try loci have been tried.
+    while len(selected) < sd.snp_top_n and next_rank < n_try:
+        missing = sd.snp_top_n - len(selected)
+        wanted = missing * (2 if background_files else 1)
+        new_passing = 0
+        round_designed: List[Tuple[LocusScore, CandidateLocus, List[PairEvaluation]]] = []
+
+        # Phase A
+        while next_rank < n_try and new_passing < wanted:
+            sc = ranked[next_rank]
+            next_rank += 1
+            aln = aln_by_locus[sc.locus]
+            cand = cand_by_locus[sc.locus]
+            if cfg.locus_discovery.refine_with_mafft:
+                if sc.locus not in refined:
+                    # refine the next max_cores loci at once; mafft runs are independent
+                    batch = [s.locus for s in ranked[next_rank - 1 : min(n_try, next_rank - 1 + cfg.max_cores)]]
+                    refined.update(refine_loci(batch, aln_by_locus, genomes_by_id, out / "loci" / "mafft", cfg.max_cores))
+                aln, sc = refined[sc.locus]
+            ev_list = _design_locus(sc, aln, cand, genomes, genomes_by_id, indexes, cfg, binding, p3,
+                                    max_target_span, cons_dir, locus_records)
+            if ev_list is None:
+                continue
+            round_designed.append((sc, cand, ev_list))
+            if any(ev.passed for ev in ev_list) and not any(_windows_overlap(cand.window, w) for w in passing_windows):
+                passing_windows.append(cand.window)
+                new_passing += 1
+        designed.extend(round_designed)
+
+        # Phase B
+        survivors = [ev for _, _, evs in round_designed for ev in evs if ev.passed]
+        if background_files and survivors:
+            screen_background(survivors, background_files, binding, sel.max_offtarget_product_size)
+
+        # Phase C: the best surviving pair per locus, one locus per region, in rank order.
+        for sc, cand, evs in round_designed:
+            chosen = next((ev for ev in evs if ev.passed), None)
+            if chosen is None:
+                if any(r.startswith("background") for ev in evs for r in ev.reasons):
+                    locus_records[sc.locus]["Outcome"] = "all passing pair(s) rejected by the background screen"
+                continue
+            if len(selected) >= sd.snp_top_n:
+                locus_records[sc.locus]["Outcome"] += "; not selected, snp_top_n already reached"
+                continue
+            # Overlapping windows often hold the same amplicon; compare amplicons on the reference.
+            amp = _reference_amplicon(chosen, reference.genome_id)
+            overlapping = [s.locus for s, _, e in selected if _regions_overlap(amp, _reference_amplicon(e, reference.genome_id))]
+            if overlapping:
+                locus_records[sc.locus]["Outcome"] = f"skipped: amplicon overlaps selected locus {overlapping[0]}"
+                continue
+            locus_records[sc.locus]["Outcome"] = f"selected pair {chosen.pair.pair_index}"
+            selected.append((sc, cand, chosen))
+            chosen_ids.add(id(chosen))
+            _write_selected(sc, cand, chosen, genome_seqs, primer_dir, amplicon_dir)
+
+    if len(selected) < sd.snp_top_n:
+        log.warning("Group %s: only %d of snp_top_n=%d loci selected after trying %d locus/loci "
+                    "(max_loci_to_try=%d, %d scored)", group, len(selected), sd.snp_top_n, next_rank,
+                    sd.max_loci_to_try, len(ranked))
 
     screen_summary = amplicon_screen(selected, genomes, genome_seqs, background_files, primer_dir, cfg) if selected else None
 
@@ -482,10 +482,89 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
         "N_Background_Genomes": len(background_files),
         "N_Candidate_Loci": len(candidates),
         "N_Scored_Loci": len(scores),
+        "N_Loci_Tried": next_rank,
         "N_Loci_Designed": len(designed),
         "N_Selected_Primer_Sets": len(selected),
         "Seconds": round(elapsed),
     }
+
+
+def _design_locus(
+    sc: LocusScore,
+    aln: Mapping[str, str],
+    cand: CandidateLocus,
+    genomes: Sequence[Genome],
+    genomes_by_id: Mapping[str, Genome],
+    indexes: Mapping[str, GenomeIndex],
+    cfg: Config,
+    binding: BindingParams,
+    p3: Mapping[str, object],
+    max_target_span: int,
+    cons_dir: Path,
+    locus_records: Dict[str, Dict[str, object]],
+) -> Optional[List[PairEvaluation]]:
+    """Primer3 design for one locus and in silico PCR of every pair on the group's genomes.
+
+    Returns the pair evaluations, or None when no pair could be designed (the reason is
+    recorded in `locus_records`)."""
+    sel = cfg.primer_selection
+    sd = cfg.snp_primer_design
+    cons_ids = list(aln) if sel.conservation == "all" else [gid for gid in aln if genomes_by_id[gid].is_target]
+    template = masked_template([aln[g] for g in cons_ids])
+    write_fasta(cons_dir / f"{sc.locus}.fasta", [(f"{sc.locus} IUPAC consensus (gaps ignored)", iupac_consensus(list(aln.values())))])
+    write_fasta(cons_dir / f"{sc.locus}.masked_template.fasta", [(f"{sc.locus} N-masked design template", template)])
+
+    lrec: Dict[str, object] = {"Locus": sc.locus, "Combined_Score": sc.combined_score,
+                               "Conserved_Fraction": 1 - template.count("N") / len(template)}
+    locus_records[sc.locus] = lrec
+    target = choose_target_region(sc.positions_by_key(), sd.snp_window_size, sd.min_snps, max_target_span, len(template))
+    if target is None:
+        lrec["Outcome"] = f"no window of {sd.snp_window_size} bp with >= {sd.min_snps} informative sites"
+        return None
+    lrec["Target_Start"], lrec["Target_Length"] = target
+    try:
+        pairs, explain = design_primers(sc.locus, template, target, p3)
+    except (OSError, RuntimeError) as e:
+        lrec["Outcome"] = f"primer3 error: {e}"
+        return None
+    if not pairs:
+        lrec["Outcome"] = f"primer3 found no pair ({explain})"
+        return None
+    evs = []
+    for pair in pairs:
+        pair.snps_in_amplicon = sc.count_in_region(pair.amplicon_start, pair.amplicon_end)
+        evs.append(evaluate_pair(pair, genomes, indexes, cand, cfg, binding))
+    n_pass = sum(ev.passed for ev in evs)
+    if n_pass:
+        lrec["Outcome"] = f"{n_pass} of {len(pairs)} pair(s) passed on the input genomes"
+    else:
+        lrec["Outcome"] = f"{len(pairs)} pair(s) designed, none passed in silico checks"
+    return evs
+
+
+def _write_selected(
+    sc: LocusScore,
+    cand: CandidateLocus,
+    chosen: PairEvaluation,
+    genome_seqs: Mapping[str, Mapping[str, str]],
+    primer_dir: Path,
+    amplicon_dir: Path,
+) -> None:
+    """Primer FASTA and predicted amplicons of a selected pair."""
+    p = chosen.pair
+    write_fasta(primer_dir / f"{sc.locus}_primers.fasta",
+                [(f"{sc.locus}_LEFT", p.left_seq), (f"{sc.locus}_RIGHT", p.right_seq)])
+    # Amplicons are written in the orientation of the reference locus, so that
+    # they can be aligned or used as a reference database directly.
+    amp_records = []
+    for gid, res in chosen.per_genome.items():
+        hit = cand.hits.get(gid)
+        for pr in res.on_target:
+            seq = product_sequence(genome_seqs[gid], pr)
+            if hit is not None and hit.strand == "-":
+                seq = revcomp(seq)
+            amp_records.append((f"{gid} {pr.contig}:{pr.start}-{pr.end} strand={hit.strand if hit else '?'} size={pr.size}", seq))
+    write_fasta(amplicon_dir / f"{sc.locus}_amplicons.fasta", amp_records)
 
 
 def run_pipeline(cfg: Config) -> pd.DataFrame:

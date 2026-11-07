@@ -3,8 +3,9 @@
 A target genome is tiled into overlapping windows of amplicon size. Each window is
 mapped against every genome with minimap2. A window is kept as a candidate locus if,
 in every genome, it has exactly one good hit and no substantial secondary hit
-(single copy, present everywhere). The hit regions are then extracted from each
-genome and written as one unaligned multi-FASTA per locus.
+(single copy, present everywhere). The pipeline builds the locus alignments from the
+``cs`` tags of these hits (see ``pseudoalign``); ``extract_loci`` writes the hit
+regions as unaligned FASTA for use outside the pipeline.
 """
 
 from __future__ import annotations

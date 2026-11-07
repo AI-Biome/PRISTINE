@@ -105,6 +105,8 @@ snp_primer_design:
 primer_selection:
   conservation: {conservation}
   background_dir: {background}
+amplicon_screen:
+  remote_blast: false   # tests stay offline
 make_plots: false
 """
 

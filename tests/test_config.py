@@ -85,3 +85,19 @@ def test_binding_thresholds_derived_from_primer3_tm(tmp_path):
     assert load_config(tmp_path / "config.yaml").min_site_tm == 55.0
     (tmp_path / "config.yaml").write_text("input_dir: raw\noutput_dir: out\nprimer_selection:\n  use_thermodynamics: false\n")
     assert load_config(tmp_path / "config.yaml").min_site_tm is None
+
+
+def test_seed_must_cover_three_prime_mismatches(tmp_path):
+    """With m mismatches allowed in an R-base 3' region, an exact seed of k bases is
+    guaranteed only if R >= (m + 1) * k."""
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "config.yaml").write_text(
+        "input_dir: raw\noutput_dir: out\nprimer_selection:\n  three_prime_region: 8\n  seed_length: 5\n"
+    )
+    with pytest.raises(ValueError, match="seed_length"):
+        load_config(tmp_path / "config.yaml")
+    (tmp_path / "config.yaml").write_text(
+        "input_dir: raw\noutput_dir: out\nprimer_selection:\n  three_prime_region: 12\n"
+        "  three_prime_max_mismatches: 2\n  seed_length: 4\n"
+    )
+    assert load_config(tmp_path / "config.yaml").primer_selection.seed_length == 4
