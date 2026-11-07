@@ -33,8 +33,11 @@ STEPS = [  # (stage, title, detail)
     ("D", "In silico PCR", "all input genomes; 3'-seeded sites, duplex Tm"),
     ("D", "Background screen", "any product in a background genome rejects a pair"),
     ("D", "Locus selection", "best passing pair, one marker per region"),
+    ("D", "Multiplex check", "products formed by primers of two selected pairs"),
     ("D", "Amplicon similarity screen", "identity to background genomes and NCBI nt"),
 ]
+PARALLEL = {6, 7}   # steps run in max_cores worker processes (Linux)
+I_DESIGN, I_SELECT = 5, 8   # steps 5-7 repeat in rounds until snp_top_n loci are selected
 
 W, H = 720, 1080
 CX, BW, BH = 270, 380, 46          # main column centre, step box size
@@ -92,6 +95,14 @@ def database(cx, cy, w, h, title, detail, colors, dashed=False):
     text(cx, cy + 18, detail, 10, MUTED)
 
 
+def tag(x_right, cy, color, label="max_cores"):
+    """Small pill, right-aligned at x_right: the step runs in parallel worker processes."""
+    w = 8 + 6.0 * len(label) + 8
+    add(f'<rect x="{x_right - w:.1f}" y="{cy - 7:.1f}" width="{w:.1f}" height="14" rx="7" fill="#ffffff" '
+        f'stroke="{color}" stroke-width="1"/>')
+    text(x_right - w / 2, cy + 3.5, label, 9, color, "bold")
+
+
 # ---------------------------------------------------------------------------
 add(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
     f'font-family="{FONT}">')
@@ -136,10 +147,21 @@ for i, (stage, title, detail) in enumerate(STEPS):
     text(x + 22, cy + 4, str(i + 1), 11.5, "#ffffff", "bold")
     text(x + 42, cy - 3, title, 13, INK, "bold", "start")
     text(x + 42, cy + 13, detail, 10.2, MUTED, "normal", "start")
+    if i in PARALLEL:
+        tag(x + BW - 10, cy - 12, dark)
     if i:
         arrow([(CX, ys[i - 1] + BH / 2), (CX, cy - BH / 2 - 1.5)])
 
 right = CX + BW / 2
+left = CX - BW / 2
+
+# design rounds: back from locus selection to primer design
+loop_x = PANEL_X - 14              # left of the stage panels, clear of the stage badges
+arrow([(left, ys[I_SELECT]), (loop_x, ys[I_SELECT]), (loop_x, ys[I_DESIGN]), (left - 1.5, ys[I_DESIGN])])
+mid = (ys[I_SELECT] + ys[I_DESIGN]) / 2
+add(f'<rect x="{loop_x - 7}" y="{mid - 64}" width="14" height="128" fill="#ffffff"/>')
+text(loop_x, mid, "next round until snp_top_n", 9.5, MUTED, extra=f' dominant-baseline="central" '
+     f'transform="rotate(-90 {loop_x} {mid:.1f})"')
 
 # side output of scoring
 i_score = 4
@@ -147,19 +169,21 @@ document(SIDE_X, ys[i_score], 170, 46, "Locus scores", "SNP summary, plots", DAT
 arrow([(right, ys[i_score]), (SIDE_X - 86, ys[i_score])])
 
 # optional inputs
-i_bg, i_amp = 7, 9
+i_bg, i_amp = 7, 10
 document(SIDE_X, ys[i_bg], 170, 50, "Background genomes", "host, contaminants, community", DATA_IN, dashed=True, stack=True)
 arrow([(SIDE_X - 86, ys[i_bg]), (right + 2, ys[i_bg])], dashed=True)
-arrow([(SIDE_X - 40, ys[i_bg] + 26), (SIDE_X - 40, ys[i_amp] - 10), (right + 2, ys[i_amp] - 10)], dashed=True)
-database(SIDE_X, ys[i_amp] + 50, 150, 52, "NCBI nt", "remote megablast", DATA_IN, dashed=True)
-arrow([(SIDE_X - 76, ys[i_amp] + 50), (SIDE_X - 110, ys[i_amp] + 50), (SIDE_X - 110, ys[i_amp] + 10),
-       (right + 2, ys[i_amp] + 10)], dashed=True)
+branch_x = right + 30               # background genomes also feed the amplicon screen
+arrow([(branch_x, ys[i_bg]), (branch_x, ys[i_amp] - 10), (right + 2, ys[i_amp] - 10)], dashed=True)
+database(SIDE_X, ys[i_amp] - 6, 150, 52, "NCBI nt", "remote megablast (default)", DATA_IN)
+arrow([(SIDE_X - 76, ys[i_amp] + 10), (right + 2, ys[i_amp] + 10)])
 
-# results
+# results (centred on the page, four side by side)
 out_y = ys[-1] + 110
-results = [(CX - 175, "Primer pairs", "sequences, Tm, sites"),
-           (CX, "Predicted amplicons", "per genome, FASTA"),
-           (CX + 175, "Risk taxa", "similar organisms, CSV")]
+RX = W / 2
+results = [(RX - 255, "Primer pairs", "sequences, Tm, sites"),
+           (RX - 85, "Predicted amplicons", "per genome, FASTA"),
+           (RX + 85, "Pooling conflicts", "cross-pair products, CSV"),
+           (RX + 255, "Risk taxa", "similar organisms, CSV")]
 for x, title, detail in results:
     sx = CX + max(-BW / 2 + 40, min(BW / 2 - 40, (x - CX) * 0.7))
     arrow([(sx, ys[-1] + BH / 2), (x, out_y - 25)])
@@ -176,6 +200,9 @@ text(lx + 22, ly + 1, "Result", 10.5, MUTED, anchor="start")
 lx += 90
 add(f'<path d="M{lx},{ly - 3} H{lx + 26}" stroke="{ARROW}" stroke-width="1.3" stroke-dasharray="4,3"/>')
 text(lx + 32, ly + 1, "Optional input", 10.5, MUTED, anchor="start")
+lx += 128
+tag(lx + 78, ly - 3, MUTED)
+text(lx + 84, ly + 1, "runs in max_cores processes (Linux)", 10.5, MUTED, anchor="start")
 
 add("</svg>")
 svg[0] = svg[0].replace(f'height="{H}"', f'height="{ly + 20:.0f}"').replace(f'0 0 {W} {H}"', f'0 0 {W} {ly + 20:.0f}"')

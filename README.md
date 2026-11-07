@@ -85,7 +85,7 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$(pwd):/data" gaiusaugustus/pristine:0.2.0 --config config.yaml
 ```
 
-With 4 threads this takes one to two minutes and writes `output/`.
+With 4 threads this takes about a minute and writes `output/`.
 
 ## Input
 
@@ -205,7 +205,7 @@ when, in each genome, it has exactly one alignment covering >= `min_query_covera
 of the window and no secondary alignment covering more than half of it. This removes
 repeats, mobile elements and multi-copy genes, which are a major source of
 unexpected PCR products. Mapping the toy dataset (four 4.7 Mb genomes) takes about
-half a minute with 4 threads.
+20 seconds with 4 threads.
 
 ### 3. Alignment from the mapping
 
@@ -281,6 +281,11 @@ round designs loci until it has twice as many passing regions as are still missi
 until `snp_top_n` loci are selected or `max_loci_to_try` loci have been tried
 (a warning reports a shortfall). Without `background_dir` the pipeline warns loudly:
 the screen then knows nothing beyond your input genomes.
+
+The selected pairs are then checked for pooling in one reaction: in silico PCR
+with primers of two different pairs combined, on every genome of the group. Products
+formed this way go to `primers/multiplex_check.csv`, and each pair of loci that
+forms one is reported with a warning not to pool them.
 
 ### 8. Amplicon screen
 
