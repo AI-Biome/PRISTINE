@@ -21,5 +21,4 @@ pytest = "*"
 pristine = { path = ".", editable = true }
 
 [tasks]
-pristine = "pristine"
 test = "pytest -q tests"

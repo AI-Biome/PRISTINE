@@ -2,12 +2,12 @@ Bootstrap: docker
 From: ghcr.io/prefix-dev/pixi:0.81.0-noble
 
 %files
-    ../pixi.toml /opt/pristine/pixi.toml
-    ../pixi.lock /opt/pristine/pixi.lock
-    ../pyproject.toml /opt/pristine/pyproject.toml
-    ../LICENSE /opt/pristine/LICENSE
-    ../README.md /opt/pristine/README.md
-    ../src /opt/pristine/src
+    pixi.toml /opt/pristine/pixi.toml
+    pixi.lock /opt/pristine/pixi.lock
+    pyproject.toml /opt/pristine/pyproject.toml
+    LICENSE /opt/pristine/LICENSE
+    README.md /opt/pristine/README.md
+    src /opt/pristine/src
 
 %post
     cd /opt/pristine
