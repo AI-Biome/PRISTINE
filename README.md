@@ -56,16 +56,16 @@ With Docker (Linux, macOS, Windows), the project directory is mounted at `/data`
 `--user` keeps the output files owned by you.
 
 ```bash
-docker pull gaiusaugustus/pristine:0.2.0
+docker pull gaiusaugustus/pristine:0.3.0
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$(pwd):/data" gaiusaugustus/pristine:0.2.0 --config config.yaml
+  -v "$(pwd):/data" gaiusaugustus/pristine:0.3.0 --config config.yaml
 ```
 
 Apptainer and Singularity (on HPC clusters) mount the current directory
 automatically.
 
 ```bash
-apptainer pull pristine.sif docker://gaiusaugustus/pristine:0.2.0
+apptainer pull pristine.sif docker://gaiusaugustus/pristine:0.3.0
 apptainer run pristine.sif --config config.yaml
 ```
 
@@ -86,7 +86,7 @@ pixi run --manifest-path ../../pixi.toml pristine --config config.yaml
 
 # or, without installing anything, with the container
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$(pwd):/data" gaiusaugustus/pristine:0.2.0 --config config.yaml
+  -v "$(pwd):/data" gaiusaugustus/pristine:0.3.0 --config config.yaml
 ```
 
 With 4 threads this takes about a minute and writes `output/`.

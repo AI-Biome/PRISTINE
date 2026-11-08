@@ -1,6 +1,6 @@
 [workspace]
 name = "pristine"
-version = "0.2.0"
+version = "0.3.0"
 description = "PRISTINE: PRimer-based Identification Suite Targeting Informative Nucleotide Elements"
 channels = ["conda-forge", "bioconda"]
 platforms = ["linux-64", "osx-arm64", "osx-64"]
