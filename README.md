@@ -236,7 +236,8 @@ time, and re-scored.
 
 A column is informative for non-target species S if the bases shown by the target
 genomes and the bases shown by S's genomes are disjoint. A run of gap columns is one
-indel event. Loci are ranked by the mean proportion of informative sites over
+indel event. A 1-nt indel inside a homopolymer of 4 or more bases is not counted: it is
+the typical nanopore error, so reads cannot be told apart by it. Loci are ranked by the mean proportion of informative sites over
 non-target species (and, for groups with several target species, by pairwise
 between-species sites).
 
@@ -299,7 +300,8 @@ All pairs that survived step 7 are screened in one streaming pass over the genom
 the amplicon is sequenced, a background organism may amplify as long as its product
 can be told apart from the target: with `background_products: distinguish` (the
 default), a product that differs from every target amplicon by fewer than `min_snps`
-substitutions + indel events rejects the pair, and any other product is recorded in
+substitutions + indel events (again without 1-nt indels in homopolymers of 4 or more)
+rejects the pair, and any other product is recorded in
 the `Background_Products` column. Products sharing less than half their 15-mers with
 every target amplicon count as different without an alignment; the others are aligned
 globally (Biopython). With `background_products: reject`, any background product
@@ -353,6 +355,7 @@ stop the run.
 ```text
 output/
 ├── run_summary.csv                      one row per group
+├── priscreen_panel.fasta                panels of all groups merged (for PRISCREEN)
 ├── pristine.log
 └── <group>/
     ├── locus_discovery/                 reference_windows.fasta, <genome>.paf (+ .paf.log) per genome
@@ -373,6 +376,8 @@ output/
         ├── multiplex_check.csv          products formed by primers of two different selected pairs (pooling)
         ├── <locus>_primers.fasta        LEFT/RIGHT sequences of accepted pairs
         ├── amplicons/<locus>_amplicons.fasta  predicted amplicon of every genome, locus orientation
+        ├── priscreen_panel.fasta        distinct amplicons per locus and species, incl. background products (PRISCREEN)
+        ├── diagnostic_sites/<locus>.tsv positions where the species' amplicons differ (substitutions, indels)
         ├── amplicon_alignments/<locus>.png  loci that amplify in the background: every amplicon aligned to the reference amplicon, differences coloured by base (+ <locus>_differences.tsv)
         └── amplicon_screen/
             ├── amplicon_screen_summary.csv  per locus: tolerated identity, closest background genome, risk taxa
@@ -398,7 +403,8 @@ conserved fraction of the template, `Target_Start`/`Target_Length` (the
 `snp_summary.csv` columns: `Combined_Informativeness_Score` (ranking),
 `Avg_Prop_Informative_SNPs_External`/`_Internal`, and per non-target species `S`:
 `Prop_External_S`, `Abs_External_S` (substitutions + indel events),
-`Subst_External_S`, `Indel_External_S`, `SNP_Pos_External_S` (alignment columns) and
+`Subst_External_S`, `Indel_External_S`, `Weak_Indel_External_S` (1-nt indels in
+homopolymers of 4 or more, not counted), `SNP_Pos_External_S` (alignment columns) and
 `Core_Region_External_S`. Groups with several target species get the same columns as
 `..._Internal_<A>_vs_<B>`.
 
@@ -418,6 +424,24 @@ background product is from the targets; `<locus>_differences.tsv` lists every
 difference.
 
 ![Example amplicon alignment](docs/example_amplicon_alignment.png)
+
+`priscreen_panel.fasta` is the reference panel for classifying the sequenced reads with
+[PRISCREEN](https://github.com/AI-Biome/PRISCREEN). Each record is one distinct amplicon
+of a (locus, species), headed `>locus|species=...|genome=...|role=target|non-target|background`,
+in the orientation of the reference amplicon. Background products of fallback loci are
+included with the background genome's species, so their reads are named, not mistaken
+for the closest non-target. In the run-level file, a locus name used by two groups gets
+the group name as prefix.
+
+`diagnostic_sites/<locus>.tsv` lists, on the reference amplicon, every position where two
+species share no base: `position` (1-based; for an insertion, the base after which it
+lies), `type` (`substitution` or `indel`; an indel event is one row whatever its
+length), `length`, `ref`, `homopolymer_base` and `homopolymer_length` (1-nt indels in
+long homopolymers are the typical nanopore error), `weak` (`yes` for a 1-nt indel in a
+homopolymer of 4 or more: not counted), `separates_target_from` (species that
+share no state with any target genome) and one column per species with its base,
+inserted bases or `-` (several states joined by `/`). The rows with `weak` = `no` naming a
+species in `separates_target_from` are the sites counted in `Sites_In_Amplicon_External_S`.
 
 ## When too few or no markers are found
 

@@ -29,10 +29,10 @@ from .insilico_pcr import (
     product_sequence,
 )
 from .loci import CandidateLocus, Window, discover_loci, locus_id
-from .manifest import Genome, choose_reference, discover_groups, is_fasta
+from .manifest import Genome, choose_reference, discover_groups, is_fasta, species_from_stem
 from .primers import PrimerPair, choose_target_region, design_primers
 from .pseudoalign import build_alignment
-from .scoring import LocusScore, score_alignment
+from .scoring import HOMOPOLYMER_WEAK, LocusScore, score_alignment
 from .seqio import read_fasta_dict, revcomp, write_fasta
 
 log = logging.getLogger(__name__)
@@ -140,13 +140,37 @@ def _aligner():
     return _ALIGNER
 
 
+def _hp_run(seq: str, start: int, end: int) -> int:
+    """Homopolymer length around seq[start:end] if that is a single repeated base, else 1."""
+    if end - start != 1:
+        return 1
+    b = seq[start]
+    i, j = start, end
+    while i > 0 and seq[i - 1] == b:
+        i -= 1
+    while j < len(seq) and seq[j] == b:
+        j += 1
+    return j - i
+
+
 def _events(a: str, b: str) -> int:
-    """Substitutions plus indel events (a gap run counts once) in a global alignment."""
+    """Substitutions plus indel events (a gap run counts once) in a global alignment.
+    A 1-nt indel in a homopolymer of >= HOMOPOLYMER_WEAK is not counted (nanopore error)."""
     aln = _aligner().align(a, b)[0]
     ta, qa = aln.aligned
+    if not len(ta):
+        return 1
     n = sum(x != y for (ts, te), (qs, qe) in zip(ta, qa) for x, y in zip(a[ts:te], b[qs:qe]))
-    n += sum(1 for k in range(1, len(ta)) if ta[k][0] != ta[k - 1][1] or qa[k][0] != qa[k - 1][1])
-    n += (ta[0][0] > 0 or qa[0][0] > 0) + (ta[-1][1] < len(a) or qa[-1][1] < len(b)) if len(ta) else 1
+    # gaps: before the first block, between blocks, after the last block
+    bounds = [((0, ta[0][0]), (0, qa[0][0]))]
+    bounds += [((ta[k - 1][1], ta[k][0]), (qa[k - 1][1], qa[k][0])) for k in range(1, len(ta))]
+    bounds.append(((ta[-1][1], len(a)), (qa[-1][1], len(b))))
+    for (as_, ae), (bs, be) in bounds:
+        if ae == as_ and be == bs:
+            continue
+        weak = (be == bs and _hp_run(a, as_, ae) >= HOMOPOLYMER_WEAK) or \
+               (ae == as_ and _hp_run(b, bs, be) >= HOMOPOLYMER_WEAK)
+        n += not weak
     return n
 
 
@@ -668,6 +692,10 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
                 _plot_alignment(sc, ev, genomes, genome_seqs, reference.genome_id, primer_dir / "amplicon_alignments",
                                 sd.min_snps)
 
+    # Reference panel and diagnostic sites for PRISCREEN (read classification).
+    if selected:
+        _write_priscreen_exports(selected, genomes, genome_seqs, reference.genome_id, primer_dir)
+
     # Pooling the selected pairs in one reaction: products formed by primers of two pairs.
     from . import multiplex
     cross = multiplex.cross_pair_products([(sc.locus, ev.pair.left_seq, ev.pair.right_seq) for sc, _, ev in selected],
@@ -806,6 +834,47 @@ def _plot_alignment(sc: LocusScore, ev: PairEvaluation, genomes: Sequence[Genome
                             rows, out_dir / f"{sc.locus}.png", out_dir / f"{sc.locus}_differences.tsv", note)
 
 
+def _panel_rows(cand: CandidateLocus, ev: PairEvaluation, genomes: Sequence[Genome],
+                genome_seqs: Mapping[str, Mapping[str, str]], reference_id: str):
+    """(reference amplicon, [(genome_id, species, role, amplicon)]) of a selected pair, all
+    in the orientation of the reference locus; None without a reference amplicon."""
+    from . import panel
+
+    ref_res = ev.per_genome.get(reference_id)
+    if ref_res is None or not ref_res.on_target:
+        return None
+    rows = []
+    for g in genomes:
+        res = ev.per_genome.get(g.genome_id)
+        hit = cand.hits.get(g.genome_id)
+        for pr in (res.on_target if res else []):
+            seq = product_sequence(genome_seqs[g.genome_id], pr).upper()
+            if hit is not None and hit.strand == "-":
+                seq = revcomp(seq)
+            rows.append((g.genome_id, g.species, "target" if g.is_target else "non-target", seq))
+    reference = next(seq for gid, _, _, seq in rows if gid == reference_id)
+    for bid, seq in sorted(ev.background_sequences.items()):
+        rows.append((bid, species_from_stem(bid), "background", panel.orient(reference, seq)))
+    return reference, rows
+
+
+def _write_priscreen_exports(selected, genomes: Sequence[Genome], genome_seqs: Mapping[str, Mapping[str, str]],
+                             reference_id: str, primer_dir: Path) -> None:
+    """primers/priscreen_panel.fasta and primers/diagnostic_sites/<locus>.tsv."""
+    from . import panel
+
+    loci = []
+    for sc, cand, ev in selected:
+        got = _panel_rows(cand, ev, genomes, genome_seqs, reference_id)
+        if got is None:
+            continue
+        reference, rows = got
+        loci.append((sc.locus, rows))
+        n = panel.write_diagnostic_sites(primer_dir / "diagnostic_sites" / f"{sc.locus}.tsv", reference, rows)
+        log.info("Locus %s: %d diagnostic site(s) written", sc.locus, n)
+    panel.write_panel(primer_dir / "priscreen_panel.fasta", loci)
+
+
 def _write_selected(
     sc: LocusScore,
     cand: CandidateLocus,
@@ -843,6 +912,9 @@ def run_pipeline(cfg: Config) -> pd.DataFrame:
         except Exception as e:  # keep going with the other groups, but be loud
             log.error("Group %s failed: %s\n%s", group, e, traceback.format_exc())
             rows.append({"Group": group, "Error": str(e)})
+    from .panel import merge_panels
+    merge_panels({g: cfg.output_dir / g / "primers" / "priscreen_panel.fasta" for g in groups},
+                 cfg.output_dir / "priscreen_panel.fasta")
     df = pd.DataFrame(rows)
     df.to_csv(cfg.output_dir / "run_summary.csv", index=False)
     return df

@@ -5,7 +5,10 @@ target group (all target genomes) is disjoint from the set of states shown by th
 genomes of S. Ambiguous bases are ignored. States are bit flags, so a whole alignment
 is scored with a few numpy operations. A gap is a state, but a run of
 consecutive informative gap columns is one *indel event* and is counted once (at its
-first column); otherwise a single 200 bp insertion would look like 200 SNPs. Internal
+first column); otherwise a single 200 bp insertion would look like 200 SNPs. A 1-nt
+indel inside a homopolymer of >= HOMOPOLYMER_WEAK bases (in the allele with the base)
+is a *weak* indel: the typical nanopore error, so reads cannot be told apart by it. Weak
+indels are reported but not counted as informative sites. Internal
 informativeness (between target species of the same group) is scored the same way
 pairwise, so groups with several target species also get species-level markers.
 """
@@ -20,6 +23,7 @@ import numpy as np
 from .manifest import Genome
 
 VALID_STATES = frozenset("ACGT-")
+HOMOPOLYMER_WEAK = 4  # 1-nt indels in homopolymers this long are not counted
 
 
 @dataclass
@@ -28,6 +32,7 @@ class SiteSet:
 
     substitutions: List[int] = field(default_factory=list)  # alignment columns
     indel_events: List[int] = field(default_factory=list)  # first column of each gap run
+    weak_indels: List[int] = field(default_factory=list)  # 1-nt indels in homopolymers, not counted
 
     @property
     def positions(self) -> List[int]:
@@ -125,6 +130,7 @@ class LocusScore:
         rec[f"Abs_{key}"] = s.count
         rec[f"Subst_{key}"] = len(s.substitutions)
         rec[f"Indel_{key}"] = len(s.indel_events)
+        rec[f"Weak_Indel_{key}"] = len(s.weak_indels)
         rec[f"SNP_Pos_{key}"] = ",".join(map(str, s.positions))
         rec[f"Core_Region_{key}"] = core_region(s.positions, self.aln_len)
 
@@ -161,17 +167,47 @@ def _or_rows(mat: np.ndarray, rows: Sequence[int]) -> np.ndarray:
     return np.bitwise_or.reduce(mat[list(rows)], axis=0)
 
 
-def sites_between(group_mask: np.ndarray, other_mask: np.ndarray) -> SiteSet:
+def homopolymer_run(seq: str, col: int) -> int:
+    """Length of the homopolymer containing the base at alignment column `col` of `seq`,
+    gaps skipped (0 if `seq` has a gap there)."""
+    b = seq[col].upper()
+    if b not in "ACGT":
+        return 0
+    n = 1
+    for step in (-1, 1):
+        i = col + step
+        while 0 <= i < len(seq):
+            c = seq[i].upper()
+            if c == "-":
+                i += step
+                continue
+            if c != b:
+                break
+            n += 1
+            i += step
+    return n
+
+
+def sites_between(group_mask: np.ndarray, other_mask: np.ndarray, seqs: Sequence[str] = ()) -> SiteSet:
     """Informative columns between two groups given their per-column state bitmasks.
 
-    Consecutive informative columns that involve a gap are one indel event."""
+    Consecutive informative columns that involve a gap are one indel event. With the
+    aligned `seqs`, a 1-column indel event whose base lies in a homopolymer of
+    >= HOMOPOLYMER_WEAK in any sequence is weak and not counted."""
     informative = (group_mask != 0) & (other_mask != 0) & ((group_mask & other_mask) == 0)
     gap = ((group_mask | other_mask) & _GAP_BIT) != 0
     subst = informative & ~gap
     indel = informative & gap
     prev = np.concatenate(([False], indel[:-1]))
+    nxt = np.concatenate((indel[1:], [False]))
     first_of_run = indel & ~prev
-    return SiteSet(substitutions=np.flatnonzero(subst).tolist(), indel_events=np.flatnonzero(first_of_run).tolist())
+    events = np.flatnonzero(first_of_run).tolist()
+    weak = []
+    if len(seqs):
+        single = set(np.flatnonzero(first_of_run & ~nxt).tolist())
+        weak = [c for c in events if c in single and max(homopolymer_run(s, c) for s in seqs) >= HOMOPOLYMER_WEAK]
+        events = [c for c in events if c not in set(weak)]
+    return SiteSet(substitutions=np.flatnonzero(subst).tolist(), indel_events=events, weak_indels=weak)
 
 
 def score_alignment(locus: str, aln: Mapping[str, str], genomes: Mapping[str, Genome]) -> LocusScore:
@@ -199,14 +235,14 @@ def score_alignment(locus: str, aln: Mapping[str, str], genomes: Mapping[str, Ge
     if target_ids:
         group_mask = _or_rows(mat, [row[g] for g in target_ids])
         for sp, gids in nontarget_species.items():
-            external[sp] = sites_between(group_mask, _or_rows(mat, [row[g] for g in gids]))
+            external[sp] = sites_between(group_mask, _or_rows(mat, [row[g] for g in gids]), seqs)
     internal: Dict[Tuple[str, str], SiteSet] = {}
     if len(target_species) > 1:
         sp_mask = {sp: _or_rows(mat, [row[g] for g in gids]) for sp, gids in target_species.items()}
         for t in target_species:
             for o in target_species:
                 if t != o:
-                    internal[(t, o)] = sites_between(sp_mask[t], sp_mask[o])
+                    internal[(t, o)] = sites_between(sp_mask[t], sp_mask[o], seqs)
 
     ungapped = {gid: len(s) - s.count("-") for gid, s in zip(ids, seqs)}
     tl = [ungapped[g] for g in target_ids]

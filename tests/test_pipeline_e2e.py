@@ -268,6 +268,16 @@ def test_background_products_distinguishable_by_sequence(dataset, tmp_path):
     assert summary.iloc[0]["N_Selected_Primer_Sets"] >= 1
     sel = pd.read_csv(cfg.output_dir / "Targetus_primus" / "primers" / "selected_primers.csv")
     assert sel["Background_Products"].fillna("").str.contains("Bystander_1").all()
+    # PRISCREEN exports: background products are panel records, the sites table names them
+    from pristine.seqio import read_fasta
+    primers = cfg.output_dir / "Targetus_primus" / "primers"
+    heads = [h for h, _ in read_fasta(primers / "priscreen_panel.fasta")]
+    assert any("|species=Bystander|genome=Bystander_1|role=background" in h for h in heads)
+    assert any("role=target" in h for h in heads)
+    assert (cfg.output_dir / "priscreen_panel.fasta").exists()
+    for locus in sel["Locus"]:
+        sites = pd.read_csv(primers / "diagnostic_sites" / f"{locus}.tsv", sep="\t")
+        assert "Bystander" in sites.columns and len(sites) >= cfg.snp_primer_design.min_snps
 
     cfg_r = load_config(write_config(tmp_path / "config_r.yaml", root.name, "out_r", background=bg.name))
     cfg_r.primer_selection.background_products = "reject"
