@@ -1,6 +1,6 @@
 # PRISTINE
 
-Authors: Tomas Kudlacek, Melanie Taprogge, Katharina Hoff
+Authors: Tomas Kudlacek, Thomas Sura, Melanie Taprogge, Katharina Hoff
 
 Contact: katharina.hoff@uni-greifswald.de
 
