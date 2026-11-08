@@ -111,3 +111,25 @@ def test_background_identity(dataset, tmp_path):
     by = df.set_index("Background_Genome")
     assert 95 < by.loc["Alienus_tertius_1", "Pct_Identity"] < 99.0 and not by.loc["Alienus_tertius_1", "Risk"]
     assert by.loc["Targetus_primus_2", "Pct_Identity"] > 99.0 and by.loc["Targetus_primus_2", "Risk"]
+
+
+def test_guess_organism_keeps_subspecies_and_variant():
+    assert (blast.guess_organism("Mycobacterium avium subsp. paratuberculosis strain K-10 chromosome, complete genome")
+            == "Mycobacterium avium subsp. paratuberculosis")
+    assert (blast.guess_organism("Mycobacterium tuberculosis variant bovis AF2122/97 genome")
+            == "Mycobacterium tuberculosis variant bovis")
+    assert blast.guess_organism("Mycobacterium avium strain 104 chromosome") == "Mycobacterium avium"
+
+
+def test_classify_subspecies_against_folder_names():
+    targets = ["Mycobacterium_avium_paratuberculosis"]
+    nontargets = ["Mycobacterium_avium_hominissuis", "Mycobacterium_avium_avium"]
+    c = blast.classify_organism
+    assert c("Mycobacterium avium subsp. paratuberculosis", targets, nontargets) == blast.STATUS_TARGET
+    assert c("Mycobacterium avium subsp. hominissuis", targets, nontargets) == blast.STATUS_NONTARGET
+    assert c("Mycobacterium avium subsp. avium", targets, nontargets) == blast.STATUS_NONTARGET
+    # subspecies unknown: neither target nor a known non-target
+    assert c("Mycobacterium avium", targets, nontargets) == blast.STATUS_UNKNOWN
+    assert c("Mycobacterium avium subsp. silvaticum", targets, nontargets) == blast.STATUS_UNKNOWN
+    # species-level groups still match any subspecies
+    assert c("Yersinia pestis subsp. microtus", ["Yersinia_pestis"], []) == blast.STATUS_TARGET

@@ -46,7 +46,9 @@ class BlastHit:
     bitscore: float
 
 
-_ORGANISM_RE = re.compile(r"^(?:PREDICTED:\s*|TPA(?:_asm)?:\s*|MAG:\s*|UNVERIFIED(?:_ORG)?:\s*)?(?:Candidatus\s+)?\[?([A-Z][a-z]+)\]?\s+([a-z][a-z\-]+)")
+_ORGANISM_RE = re.compile(r"^(?:PREDICTED:\s*|TPA(?:_asm)?:\s*|MAG:\s*|UNVERIFIED(?:_ORG)?:\s*)?(?:Candidatus\s+)?\[?([A-Z][a-z]+)\]?\s+([a-z][a-z\-]+)"
+                           r"(?:\s+(subsp\.|variant|var\.|pv\.)\s+([a-z][a-z\-]+))?")
+_RANK_WORDS = {"subsp.", "subsp", "variant", "var.", "var", "pv.", "pv"}
 
 
 def guess_organism(title: str) -> str:
@@ -56,6 +58,8 @@ def guess_organism(title: str) -> str:
         genus, species = m.group(1), m.group(2)
         if species in {"sp", "sp.", "strain", "isolate", "genome", "chromosome", "plasmid", "clone"}:
             return f"{genus} sp."
+        if m.group(3):  # keep the subspecies / variant: MAP and the other M. avium subspecies differ there
+            return f"{genus} {species} {m.group(3)} {m.group(4)}"
         return f"{genus} {species}"
     return title.split()[0] if title.split() else "unknown"
 
@@ -99,16 +103,21 @@ def remote_blast(records: Sequence[Tuple[str, str]], db: str = "nt", megablast: 
 
 
 def _norm(name: str) -> str:
-    return name.replace("_", " ").strip().lower()
+    """'Mycobacterium avium subsp. paratuberculosis' and 'Mycobacterium_avium_paratuberculosis'
+    both -> 'mycobacterium avium paratuberculosis'."""
+    return " ".join(w for w in name.replace("_", " ").lower().split() if w not in _RANK_WORDS)
 
 
 def classify_organism(organism: str, target_species: Iterable[str], nontarget_species: Iterable[str]) -> str:
-    org = _norm(organism)
+    org = _norm(organism).split()
+    # word-wise prefix: 'Mycobacterium avium paratuberculosis' matches the group
+    # 'Mycobacterium_avium_paratuberculosis', but a hit named only 'Mycobacterium avium'
+    # (subspecies unknown) matches neither MAP nor a non-target subspecies
     for sp in target_species:
-        if org.startswith(_norm(sp)):
+        if org[: len(_norm(sp).split())] == _norm(sp).split():
             return STATUS_TARGET
     for sp in nontarget_species:
-        if org.startswith(_norm(sp)):
+        if org[: len(_norm(sp).split())] == _norm(sp).split():
             return STATUS_NONTARGET
     return STATUS_UNKNOWN
 
