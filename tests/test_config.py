@@ -77,8 +77,10 @@ def test_binding_thresholds_derived_from_primer3_tm(tmp_path):
     (tmp_path / "raw").mkdir()
     (tmp_path / "config.yaml").write_text("input_dir: raw\noutput_dir: out\n")
     cfg = load_config(tmp_path / "config.yaml")
-    assert cfg.annealing_temp == 54.0  # PRIMER_MIN_TM 57 - 3
-    assert cfg.min_site_tm == 49.0  # minus 5 C margin
+    assert cfg.annealing_temp == 56.0  # PRIMER_MIN_TM 59 - 3
+    assert cfg.min_site_tm == 51.0  # minus 5 C margin
+    assert cfg.near_miss_site_tm == 46.0  # minus the 5 C near-miss margin
+    assert cfg.primer3_params["PRIMER_DNA_CONC"] == 250.0
     (tmp_path / "config.yaml").write_text(
         "input_dir: raw\noutput_dir: out\nprimer_selection:\n  annealing_temp: 58\n  binding_tm_margin: 3\n"
     )
@@ -101,3 +103,18 @@ def test_seed_must_cover_three_prime_mismatches(tmp_path):
         "  three_prime_max_mismatches: 2\n  seed_length: 4\n"
     )
     assert load_config(tmp_path / "config.yaml").primer_selection.seed_length == 4
+
+
+def test_near_miss_margin_and_recommended_annealing(tmp_path):
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "config.yaml").write_text("input_dir: raw\noutput_dir: out\nprimer_selection:\n  near_miss_tm_margin: 0\n")
+    assert load_config(tmp_path / "config.yaml").near_miss_site_tm is None
+    (tmp_path / "config.yaml").write_text("input_dir: raw\noutput_dir: out\nprimer_selection:\n  near_miss_tm_margin: -1\n")
+    with pytest.raises(ValueError, match="near_miss_tm_margin"):
+        load_config(tmp_path / "config.yaml")
+    (tmp_path / "config.yaml").write_text("input_dir: raw\noutput_dir: out\nprimer_selection:\n  use_thermodynamics: false\n")
+    assert load_config(tmp_path / "config.yaml").near_miss_site_tm is None
+    (tmp_path / "config.yaml").write_text("input_dir: raw\noutput_dir: out\n")
+    cfg = load_config(tmp_path / "config.yaml")
+    assert cfg.recommended_annealing_temp(64.2, 63.9) == pytest.approx(60.9)  # weaker primer - 3
+    assert cfg.recommended_annealing_temp(59.0, 59.5) == 56.0  # never below the screened annealing temp

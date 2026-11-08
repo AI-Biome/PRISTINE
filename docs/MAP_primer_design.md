@@ -26,7 +26,10 @@ gave a product in all of them, so all 3 selected loci came from the fallback. Th
 were too different to align. The `Background_Products` column of
 `selected_primers.csv` lists these differences per genome. Some of the best MAP vs
 MAA loci are closer to *M. intracellulare* than to MAA, so check that column, not
-just the MAA site count.
+just the MAA site count. In the first lab panel (7 Nov 2026, primer3's default 50 nM primer),
+pair 2251500_2253500 had no predicted product in *M. intracellulare* and *M. chimaera*
+because its forward site reached 49.4 °C against a 50.0 °C cutoff. An independent check
+found the 1317 bp product in all of them. Such near misses now reject a pair.
 
 ## 2. Requirements
 
@@ -227,9 +230,10 @@ primer3:
     PRIMER_MIN_SIZE: 18
     PRIMER_OPT_SIZE: 20
     PRIMER_MAX_SIZE: 25
-    PRIMER_MIN_TM: 58.0           # MAP is ~69 % GC: a slightly higher Tm window
-    PRIMER_OPT_TM: 62.0           #   finds more acceptable conserved sites
-    PRIMER_MAX_TM: 65.0
+    PRIMER_DNA_CONC: 250.0        # nM primer in the PCR; all Tm values below are at this concentration
+    PRIMER_MIN_TM: 60.0           # MAP is ~69 % GC: a higher Tm window than the default
+    PRIMER_OPT_TM: 64.0           #   finds more acceptable conserved sites
+    PRIMER_MAX_TM: 67.0
     PRIMER_PAIR_MAX_DIFF_TM: 3.0
     PRIMER_MIN_GC: 45.0
     PRIMER_MAX_GC: 70.0           # default 65 rejects many primers in a 69 % GC genome
@@ -257,8 +261,10 @@ snp_primer_design:
 primer_selection:
   conservation: all
   use_thermodynamics: true
-  annealing_temp: null            # = PRIMER_MIN_TM - 3 = 55 C
-  binding_tm_margin: 5.0          # off-target sites with duplex Tm >= 50 C count as binding
+  annealing_temp: null            # = PRIMER_MIN_TM - 3 = 57 C
+  binding_tm_margin: 5.0          # off-target sites with duplex Tm >= 52 C count as binding
+  near_miss_tm_margin: 5.0        # products with sites at 47-52 C (near misses) also reject a pair
+  poolable: true                  # the selected pairs can be pooled in one reaction
   max_mismatches: 6
   three_prime_region: 8
   three_prime_max_mismatches: 1
@@ -323,7 +329,7 @@ All paths are below `output/Mycobacterium_avium_paratuberculosis/`.
 
 | File | What to check |
 |---|---|
-| `primers/selected_primers.csv` | The main result. For each pair, `Sites_In_Amplicon_External_<subsp>` should be at least 3 for MAH, MAA and MAS. Higher numbers make reads easier to classify. `On_Target_Product_Sizes` should be similar across all MAP genomes. A low `Min_On_Target_Site_Tm` means a weak primer site in some genome. |
+| `primers/selected_primers.csv` | The main result, best pair first (`Rank` 1). `primers/selected_primers.fasta` has the same primers in the same order, ready for ordering oligos. For each pair, `Sites_In_Amplicon_External_<subsp>` should be at least 3 for MAH, MAA and MAS. Higher numbers make reads easier to classify. `On_Target_Product_Sizes` should be similar across all MAP genomes. A low `Min_On_Target_Site_Tm` means a weak primer site in some genome. `Recommended_Annealing_Temp` is the annealing temperature to give the lab. |
 | `primers/locus_design_log.csv` | Why loci failed, and which selected loci are fallback loci that amplify in the background. If many say `rejected by the background screen`, a background genome gives products within `min_snps` of the MAP amplicon; `Failure_Reasons` names it. |
 | `primers/primer_design_summary.csv` | Every candidate pair with its `Failure_Reasons`. |
 | `primers/amplicon_screen/amplicon_screen_summary.csv` | Organisms with a sequence close to the amplicon that are not in your input. Any `BLAST_Risk_Taxa` entry has to be explained or added as a non-target or background genome, followed by a rerun. |
@@ -337,6 +343,9 @@ Before ordering primers:
    `primers/<locus>_primers.fasta`.
 2. Order the top 2–3 pairs, each from a different locus.
 3. Wet-lab panel: MAP C-type and S-type DNA, MAH, MAA, *M. intracellulare*, a MAP-free
-   bovine fecal DNA extract, and a no-template control. Run a gradient PCR around the
-   55 °C design annealing temperature. The template is high-GC, so test DMSO or
-   betaine if the yield is low.
+   bovine fecal DNA extract, and a no-template control. Run a gradient PCR from the
+   57 °C design annealing temperature up to a few degrees above
+   `Recommended_Annealing_Temp`, not below 57 °C: below it, mismatched sites bind that
+   the in silico PCR did not count as binding. The template is high-GC, so test DMSO or
+   betaine if the yield is low. Tell the lab the primer concentration the Tm values
+   assume (`PRIMER_DNA_CONC`, 250 nM).

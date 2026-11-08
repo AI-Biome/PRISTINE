@@ -9,7 +9,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -23,9 +23,11 @@ from .insilico_pcr import (
     BindingParams,
     GenomeIndex,
     GenomePcrResult,
+    Product,
     Thermo,
     amplify,
     classify_products,
+    is_near_miss,
     product_sequence,
 )
 from .loci import CandidateLocus, Window, discover_loci, locus_id
@@ -66,11 +68,29 @@ def binding_params_from_config(cfg: Config) -> BindingParams:
             mv_conc=float(p3.get("PRIMER_SALT_MONOVALENT", 50.0)),
             dv_conc=float(p3.get("PRIMER_SALT_DIVALENT", 1.5)),
             dntp_conc=float(p3.get("PRIMER_DNTP_CONC", 0.6)),
-            dna_conc=float(p3.get("PRIMER_DNA_CONC", 50.0)),
+            dna_conc=float(p3.get("PRIMER_DNA_CONC", 250.0)),
         )
     return BindingParams(max_mismatches=sel.max_mismatches, three_prime_region=sel.three_prime_region,
                          three_prime_max_mismatches=sel.three_prime_max_mismatches, seed_length=sel.seed_length,
-                         min_tm=cfg.min_site_tm, thermo=thermo)
+                         min_tm=cfg.min_site_tm, thermo=thermo, near_miss_tm=cfg.near_miss_site_tm)
+
+
+def split_near_misses(products: Sequence[Product], binding: BindingParams) -> Tuple[List[Product], List[Product]]:
+    """(products that count, near misses) of an `amplify(..., include_near_misses=True)` result."""
+    real, near = [], []
+    for pr in products:
+        (near if is_near_miss(pr, binding) else real).append(pr)
+    return real, near
+
+
+def describe_near_misses(products: Sequence[Product]) -> str:
+    """Failure reason for near-miss products: count, sizes and the Tm of the weaker site."""
+    sizes = ",".join(str(pr.size) for pr in sorted(products, key=lambda p: p.size))
+    tms = [pr.weakest_tm for pr in products if pr.weakest_tm is not None]
+    text = f"{len(products)} near-miss product(s) of {sizes} bp"
+    if tms:
+        text += f", weaker site Tm up to {max(tms):.1f} C"
+    return text
 
 
 # ---- parallel in silico PCR ---------------------------------------------------------
@@ -106,23 +126,37 @@ def _evaluate_job(job: Tuple[PrimerPair, str]) -> "PairEvaluation":
     return evaluate_pair(pair, s["genomes"], s["indexes"], s["cands"][locus], s["cfg"], s["binding"])
 
 
-def _background_job(job: Tuple[str, str, Sequence[str], bool]) -> Tuple[list, Optional[int], Optional[str]]:
+def _background_job(job: Tuple[str, str, Sequence[str], bool]) -> "_BackgroundResult":
     left, right, amplicons, distinguish = job
     s = _SHARED
     return _screen_one(s["bg_index"], left, right, amplicons, distinguish, s["max_product"], s["binding"], s["cap"])
 
 
-def _screen_one(index: GenomeIndex, left: str, right: str, amplicons: Sequence[str], distinguish: bool,
-                max_product_size: int, binding: BindingParams, cap: int) -> Tuple[list, Optional[int], Optional[str]]:
-    """Products of one pair in one background genome and, with `distinguish`, the fewest
-    differences between any of them and the target amplicons, with that product's sequence."""
-    products = amplify(index, left, right, max_product_size, binding)
-    if not products or not distinguish:
-        return products, None, None
+@dataclass
+class _BackgroundResult:
+    products: List[Product]  # products that count
+    diff: Optional[int] = None  # fewest differences of `products` from a target amplicon
+    closest: Optional[str] = None  # sequence of that product
+    near: List[Product] = field(default_factory=list)  # near misses: reject the pair
+
+
+def _closest(index: GenomeIndex, products: Sequence[Product], amplicons: Sequence[str], cap: int) -> Tuple[int, str]:
     diffs = [(min_differences(seq, amplicons, cap), seq)
              for seq in (product_sequence(index, pr) for pr in products)]
-    diff, seq = min(diffs, key=lambda d: d[0])
-    return products, diff, seq
+    return min(diffs, key=lambda d: d[0])
+
+
+def _screen_one(index: GenomeIndex, left: str, right: str, amplicons: Sequence[str], distinguish: bool,
+                max_product_size: int, binding: BindingParams, cap: int) -> _BackgroundResult:
+    """Products and near misses of one pair in one background genome and, with
+    `distinguish`, the fewest differences between the products and the target amplicons
+    (not needed when a near miss already rejects the pair)."""
+    products, near = split_near_misses(amplify(index, left, right, max_product_size, binding,
+                                               include_near_misses=True), binding)
+    res = _BackgroundResult(products, near=near)
+    if distinguish and products and not near:
+        res.diff, res.closest = _closest(index, products, amplicons, cap)
+    return res
 
 
 # ---- distinguishing background products by sequence ---------------------------------
@@ -232,7 +266,13 @@ def evaluate_pair(
     for g in genomes:
         hit = locus.hits.get(g.genome_id)
         region = (hit.contig, hit.start, hit.end) if hit else None
-        products = amplify(indexes[g.genome_id], pair.left_seq, pair.right_seq, sel.max_offtarget_product_size, binding)
+        products, near = split_near_misses(amplify(indexes[g.genome_id], pair.left_seq, pair.right_seq,
+                                                   sel.max_offtarget_product_size, binding, include_near_misses=True),
+                                            binding)
+        near_off = classify_products(g.genome_id, near, region).off_target
+        if near_off:
+            ev.passed = False
+            ev.reasons.append(f"{g.genome_id}: {describe_near_misses(near_off)}")
         res = classify_products(g.genome_id, products, region)
         ev.per_genome[g.genome_id] = res
         if res.off_target:
@@ -292,7 +332,13 @@ def screen_background(
                     results = list(pool.map(_background_job, jobs))
             finally:
                 _SHARED.pop("bg_index", None)
-        for ev, (products, diff, closest) in zip(alive, results):
+        for ev, res in zip(alive, results):
+            products, diff, closest = res.products, res.diff, res.closest
+            if res.near:
+                ev.passed = False
+                ev.per_genome[bid] = classify_products(bid, res.near, None)
+                ev.reasons.append(f"background {bid}: {describe_near_misses(res.near)}")
+                continue
             if not products:
                 continue
             if distinguish and diff >= min_snps:
@@ -359,18 +405,38 @@ def _regions_overlap(a: Optional[Tuple[str, int, int]], b: Optional[Tuple[str, i
     return a[0] == b[0] and a[1] < b[2] and b[1] < a[2]
 
 
-def _pair_record(ev: PairEvaluation, score: LocusScore, selected: bool) -> Dict[str, object]:
+def _selection_rank_key(item: Tuple[LocusScore, CandidateLocus, PairEvaluation]) -> Tuple[bool, float, float]:
+    """Best first: no background product, then the most informative locus, then the lowest primer3 penalty."""
+    sc, _, ev = item
+    return bool(ev.background_products), -sc.combined_score, ev.pair.penalty
+
+
+def _rank_pair_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Selected pairs by Rank, then the other passing pairs, then failed ones; within those
+    by locus score (high first) and primer3 penalty (low first)."""
+    if df.empty:
+        return df
+    key = df.assign(_unselected=df["Rank"].isna(), _failed=~df["Passed_Checks"].astype(bool),
+                    _bg=df["Background_Products"].fillna("").astype(str) != "")
+    key = key.sort_values(["_unselected", "Rank", "_failed", "_bg", "Locus_Combined_Score", "Primer3_Penalty"],
+                          ascending=[True, True, True, True, False, True], kind="stable")
+    return df.loc[key.index].reset_index(drop=True)
+
+
+def _pair_record(ev: PairEvaluation, score: LocusScore, rank: Optional[int], cfg: Config) -> Dict[str, object]:
     p = ev.pair
     rec: Dict[str, object] = {
+        "Rank": rank,
         "Locus": p.locus,
         "Pair_Index": p.pair_index,
-        "Selected": selected,
+        "Selected": rank is not None,
         "Passed_Checks": ev.passed,
         "Failure_Reasons": " | ".join(ev.reasons),
         "LEFT_PRIMER": p.left_seq,
         "RIGHT_PRIMER": p.right_seq,
         "LEFT_TM": round(p.left_tm, 2),
         "RIGHT_TM": round(p.right_tm, 2),
+        "Recommended_Annealing_Temp": round(cfg.recommended_annealing_temp(p.left_tm, p.right_tm), 1),
         "LEFT_GC": round(p.left_gc, 1),
         "RIGHT_GC": round(p.right_gc, 1),
         "Template_Product_Size": p.template_product_size,
@@ -541,8 +607,12 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
     binding = binding_params_from_config(cfg)
     if binding.min_tm is not None:
         log.info("Binding model: <= %d mismatch(es) in the 3'-terminal %d nt, <= %d overall, duplex Tm >= %.1f C "
-                 "(annealing %.1f C minus %.1f C margin)", binding.three_prime_max_mismatches, binding.three_prime_region,
-                 binding.max_mismatches, binding.min_tm, cfg.annealing_temp, sel.binding_tm_margin)
+                 "(annealing %.1f C minus %.1f C margin; primer %.0f nM)", binding.three_prime_max_mismatches,
+                 binding.three_prime_region, binding.max_mismatches, binding.min_tm, cfg.annealing_temp,
+                 sel.binding_tm_margin, float(cfg.primer3_params.get("PRIMER_DNA_CONC", 250.0)))
+        if binding.near_miss_tm is not None:
+            log.info("Near misses: products whose sites reach only %.1f-%.1f C also reject a pair",
+                     binding.near_miss_tm, binding.min_tm)
     else:
         log.info("Binding model: mismatch counts only, <= %d in the 3'-terminal %d nt and <= %d overall",
                  binding.three_prime_max_mismatches, binding.three_prime_region, binding.max_mismatches)
@@ -569,12 +639,15 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
     designed: List[Tuple[LocusScore, CandidateLocus, List[PairEvaluation]]] = []
     passing_windows: List[Window] = []
     selected: List[Tuple[LocusScore, CandidateLocus, PairEvaluation]] = []
-    chosen_ids = set()
     refined: Dict[str, Tuple[Dict[str, str], LocusScore]] = {}
     n_try = min(sd.max_loci_to_try, len(ranked))
     next_rank = 0
 
     reserve: List[Tuple[LocusScore, CandidateLocus, PairEvaluation]] = []
+    from . import multiplex
+    # Cross-pair products of the selected pairs; near misses count here too.
+    pool_binding = binding if binding.near_miss_tm is None else replace(binding, min_tm=binding.near_miss_tm,
+                                                                        near_miss_tm=None)
 
     def select(sc: LocusScore, cand: CandidateLocus, chosen: PairEvaluation, note: str) -> None:
         if len(selected) >= sd.snp_top_n:
@@ -586,9 +659,19 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
         if overlapping:
             locus_records[sc.locus]["Outcome"] = f"skipped: amplicon overlaps selected locus {overlapping[0]}"
             return
+        if sel.poolable and selected:
+            # the primers of this pair must not form products (or near misses) with any selected pair
+            cross = multiplex.cross_pair_products(
+                [(s.locus, e.pair.left_seq, e.pair.right_seq) for s, _, e in selected]
+                + [(sc.locus, chosen.pair.left_seq, chosen.pair.right_seq)],
+                indexes, pool_binding, sel.max_offtarget_product_size)
+            partners = sorted({b if a == sc.locus else a for a, b in multiplex.conflicting_loci(cross) if sc.locus in (a, b)})
+            if partners:
+                locus_records[sc.locus]["Outcome"] = (f"skipped: primers form cross-pair products with selected locus "
+                                                      f"{partners[0]} (poolable: true)")
+                return
         locus_records[sc.locus]["Outcome"] = f"selected pair {chosen.pair.pair_index}{note}"
         selected.append((sc, cand, chosen))
-        chosen_ids.add(id(chosen))
         _write_selected(sc, cand, chosen, genome_seqs, primer_dir, amplicon_dir)
 
     # Rounds of: (A) design and screen loci against the group's own genomes, (B) one
@@ -685,6 +768,16 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
 
     _SHARED.clear()  # release the indexes before the next group
 
+    # Every output lists the selected pairs best first (Rank 1 = best).
+    selected.sort(key=_selection_rank_key)
+    rank_of = {id(ev): i for i, (_, _, ev) in enumerate(selected, 1)}
+    for i, (sc, _, ev) in enumerate(selected, 1):
+        log.info("Rank %d: %s pair %d (locus score %.4f, primer3 penalty %.3f%s)", i, sc.locus, ev.pair.pair_index,
+                 sc.combined_score, ev.pair.penalty, ", amplifies in the background" if ev.background_products else "")
+    write_fasta(primer_dir / "selected_primers.fasta",
+                [rec for i, (sc, _, ev) in enumerate(selected, 1)
+                 for rec in ((f"rank{i}_{sc.locus}_LEFT", ev.pair.left_seq), (f"rank{i}_{sc.locus}_RIGHT", ev.pair.right_seq))])
+
     # Loci that amplify in the background: show how their amplicons differ from the target.
     if cfg.make_plots:
         for sc, cand, ev in selected:
@@ -696,10 +789,10 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
     if selected:
         _write_priscreen_exports(selected, genomes, genome_seqs, reference.genome_id, primer_dir)
 
-    # Pooling the selected pairs in one reaction: products formed by primers of two pairs.
-    from . import multiplex
+    # Pooling the selected pairs in one reaction: products formed by primers of two pairs
+    # (none with poolable: true).
     cross = multiplex.cross_pair_products([(sc.locus, ev.pair.left_seq, ev.pair.right_seq) for sc, _, ev in selected],
-                                          indexes, binding, sel.max_offtarget_product_size)
+                                          indexes, pool_binding, sel.max_offtarget_product_size)
     cross.to_csv(primer_dir / "multiplex_check.csv", index=False)
     for a, b in multiplex.conflicting_loci(cross):
         log.warning("Selected loci %s and %s form cross-pair products; do not pool them in one reaction "
@@ -712,11 +805,13 @@ def run_group(group: str, genomes: Sequence[Genome], cfg: Config) -> Dict[str, o
 
     screen_summary = amplicon_screen(selected, genomes, genome_seqs, background_files, primer_dir, cfg) if selected else None
 
-    pair_records = [_pair_record(ev, sc, id(ev) in chosen_ids) for sc, _, evs in designed for ev in evs]
-    pd.DataFrame(pair_records).to_csv(primer_dir / "primer_design_summary.csv", index=False)
+    pair_records = [_pair_record(ev, sc, rank_of.get(id(ev)), cfg) for sc, _, evs in designed for ev in evs]
+    all_pairs = _rank_pair_table(pd.DataFrame(pair_records))
+    if "Rank" in all_pairs:
+        all_pairs["Rank"] = all_pairs["Rank"].astype("Int64")  # blank, not NaN, for unselected pairs
+    all_pairs.to_csv(primer_dir / "primer_design_summary.csv", index=False)
     pd.DataFrame(list(locus_records.values())).to_csv(primer_dir / "locus_design_log.csv", index=False)
     # keep the header even when nothing was selected, so the file is still a valid table
-    all_pairs = pd.DataFrame(pair_records)
     sel_df = all_pairs[all_pairs["Selected"]] if "Selected" in all_pairs else all_pairs
     sel_df.to_csv(primer_dir / "selected_primers.csv", index=False)
 

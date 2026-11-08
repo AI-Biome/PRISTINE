@@ -133,9 +133,10 @@ primer3:
     PRIMER_MIN_SIZE: 18
     PRIMER_OPT_SIZE: 20
     PRIMER_MAX_SIZE: 25
-    PRIMER_MIN_TM: 57.0
-    PRIMER_OPT_TM: 60.0
-    PRIMER_MAX_TM: 63.0
+    PRIMER_DNA_CONC: 250.0        # nM primer; every Tm in PRISTINE is computed at this concentration
+    PRIMER_MIN_TM: 59.0
+    PRIMER_OPT_TM: 62.0
+    PRIMER_MAX_TM: 65.0
     PRIMER_PAIR_MAX_DIFF_TM: 3.0
     PRIMER_MIN_GC: 35.0
     PRIMER_MAX_GC: 65.0
@@ -166,6 +167,8 @@ primer_selection:
   use_thermodynamics: true        # score candidate binding sites by duplex Tm (primer3)
   annealing_temp: null            # default PRIMER_MIN_TM - 3
   binding_tm_margin: 5.0          # a site binds if its duplex Tm >= annealing_temp - margin
+  near_miss_tm_margin: 5.0        # products whose sites reach only this much less also reject a pair; 0: off
+  poolable: true                  # selected pairs form no cross-pair products, so they can be pooled
   max_mismatches: 6               # prefilter: mismatches tolerated over the whole primer
   three_prime_region: 8           # 3'-terminal bases scrutinised separately
   three_prime_max_mismatches: 1   # mismatches tolerated inside the 3' region
@@ -265,8 +268,23 @@ with a mismatch at the terminal base. With `use_thermodynamics`, the 5' part is 
 compared at a shift of one base so template bulges are not missed, and Primer3's
 thermodynamic heterodimer calculation, based on nearest-neighbour parameters
 [4, 5], gives the duplex Tm of the primer on that genomic window. A site binds if
-the Tm is at least `annealing_temp - binding_tm_margin` (49 C by default); without
-thermodynamics the mismatch limits alone decide. All products up to
+the Tm is at least `annealing_temp - binding_tm_margin` (51 C by default); without
+thermodynamics the mismatch limits alone decide.
+
+All Tm values (primer3's primer Tm, the duplex Tm of binding sites and the default
+annealing temperature) are computed at `PRIMER_DNA_CONC`, 250 nM by default. Primer3's
+own default of 50 nM is below the 200-500 nM of a typical PCR and gives Tm values about
+2 C too low. Set it to the primer concentration of your reaction. The default Tm range
+of 59-65 C at 250 nM selects the same primers as 57-63 C at 50 nM.
+
+A product whose weaker site reaches only `binding_tm_margin + near_miss_tm_margin`
+below the annealing temperature (46-51 C by default) is a near miss. Once a first copy
+of it exists, later cycles prime on the perfect primer sequence it carries, so such a
+product can appear in the lab. A near miss in any input or background genome therefore
+rejects the pair, whatever its sequence (`... near-miss product(s) ...` in
+`Failure_Reasons`), and the multiplex check counts near misses as cross-pair products.
+Finding them costs almost nothing: they come from the same candidate sites and duplex
+Tm values. All products up to
 `max_offtarget_product_size` from any primer combination (including F/F and R/R)
 are enumerated. A pair is accepted only if
 
@@ -302,7 +320,7 @@ can be told apart from the target: with `background_products: distinguish` (the
 default), a product that differs from every target amplicon by fewer than `min_snps`
 substitutions + indel events (again without 1-nt indels in homopolymers of 4 or more)
 rejects the pair, and any other product is recorded in
-the `Background_Products` column. Products sharing less than half their 15-mers with
+the `Background_Products` column. A near miss rejects the pair in both modes. Products sharing less than half their 15-mers with
 every target amplicon count as different without an alignment; the others are aligned
 globally (Biopython). With `background_products: reject`, any background product
 rejects the pair.
@@ -325,10 +343,15 @@ warns loudly: the screen then knows nothing beyond your input genomes.
 #### 10. Multiplex check
 
 The selected pairs are checked for pooling in one reaction: in silico PCR with primers
-of two different pairs combined, on every genome of the group. Products formed this
-way go to `primers/multiplex_check.csv`, and each pair of loci that forms one is
-reported with a warning not to pool them. This check uses the group's own genomes
-only, not the background genomes.
+of two different pairs combined, on every genome of the group, with near misses
+counted as products. With `poolable: true` (the default) this check runs during
+locus selection: a locus whose pair forms a product with an already selected pair
+is skipped (`skipped: primers form cross-pair products with selected locus ...` in
+`locus_design_log.csv`), so the final pairs can always be pooled and
+`primers/multiplex_check.csv` stays empty. With `poolable: false` such loci are
+selected, the products are listed in `primers/multiplex_check.csv`, and each pair of
+loci that forms one is reported with a warning not to pool them. This check uses the
+group's own genomes only, not the background genomes.
 
 #### 11. Amplicon similarity screen
 
@@ -370,8 +393,9 @@ output/
     │   ├── consensus_sequences/         <locus>.fasta (IUPAC consensus), <locus>.masked_template.fasta
     │   └── snp_density_plots/           snp_positions_<locus>.png for selected loci
     └── primers/
-        ├── selected_primers.csv         the accepted primer pair per locus  <-- main result
-        ├── primer_design_summary.csv    every candidate pair with pass/fail reasons
+        ├── selected_primers.csv         the accepted primer pair per locus, best first  <-- main result
+        ├── selected_primers.fasta       the same primers, best first (rank<N>_<locus>_LEFT/RIGHT)
+        ├── primer_design_summary.csv    every candidate pair with pass/fail reasons (selected pairs first)
         ├── locus_design_log.csv         per locus: target region and outcome
         ├── multiplex_check.csv          products formed by primers of two different selected pairs (pooling)
         ├── <locus>_primers.fasta        LEFT/RIGHT sequences of accepted pairs
@@ -408,11 +432,25 @@ homopolymers of 4 or more, not counted), `SNP_Pos_External_S` (alignment columns
 `Core_Region_External_S`. Groups with several target species get the same columns as
 `..._Internal_<A>_vs_<B>`.
 
-`selected_primers.csv` / `primer_design_summary.csv` columns include the primer
+The selected pairs are ranked, best first, in `selected_primers.csv`,
+`selected_primers.fasta`, `primer_design_summary.csv` (column `Rank`, 1 = best; empty
+for pairs that were not selected), `priscreen_panel.fasta` and the amplicon screen.
+Ranking: pairs without background products before fallback pairs that amplify in the
+background, then the higher `Locus_Combined_Score` (informative sites against the
+non-targets), then the lower `Primer3_Penalty`. If you need fewer primer sets than
+were selected, take them from the top. In `primer_design_summary.csv` the selected
+pairs are followed by the other passing pairs and then the failed ones, each sorted
+the same way.
+
+`selected_primers.csv` / `primer_design_summary.csv` columns include `Rank`, the primer
 sequences, Tm and GC, `Template_Product_Size` (on the alignment, including insertion
 columns of other genomes), `On_Target_Product_Sizes` (real predicted size per genome),
 `Sites_In_Amplicon_External_S`, `Min_On_Target_Site_Tm` (weakest predicted primer
-duplex among the intended sites) and `Failure_Reasons` for rejected pairs.
+duplex among the intended sites), `Background_Products`,
+`Recommended_Annealing_Temp` and `Failure_Reasons` for rejected pairs.
+`Recommended_Annealing_Temp` is 3 C below the Tm of the pair's weaker primer, and never
+below the annealing temperature the in silico PCR assumed. Annealing lower than that
+lets more mismatched sites bind than were screened for.
 
 `amplicon_alignments/<locus>.png` is drawn for every selected locus that also amplifies
 in a background genome. Each row is one predicted amplicon (identical ones collapsed)
@@ -475,7 +513,7 @@ them at the best loci.
 
 ## Notes on specificity
 
-Primers with Tm around 60 C, no ambiguous bases, and a single predicted product in
+Primers with Tm around 62 C, no ambiguous bases, and a single predicted product in
 every input genome are necessary but not sufficient for a clean PCR: the in silico
 check only knows the genomes you provide. Add genomes of organisms expected in your
 samples (host, common contaminants, other community members, e.g. the taxa seen in
@@ -483,7 +521,8 @@ samples (host, common contaminants, other community members, e.g. the taxa seen 
 should also be discriminated by the amplicon. For a final shortlist, Primer-BLAST
 against NCBI nt remains the broadest available screen. The thermodynamic binding model
 is a prediction: a reported duplex Tm just above the threshold means that a weak
-product is possible.
+product is possible. Sites just below the threshold are rejected as near misses, but
+annealing below the screened temperature lets weaker sites bind than were checked.
 
 ## Development
 

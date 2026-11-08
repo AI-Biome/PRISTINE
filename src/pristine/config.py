@@ -23,9 +23,14 @@ DEFAULT_PRIMER3_PARAMS: Dict[str, Any] = {
     "PRIMER_MIN_SIZE": 18,
     "PRIMER_OPT_SIZE": 20,
     "PRIMER_MAX_SIZE": 25,
-    "PRIMER_MIN_TM": 57.0,
-    "PRIMER_OPT_TM": 60.0,
-    "PRIMER_MAX_TM": 63.0,
+    # All Tm values (primer3 design, binding sites, annealing temperature) are computed at
+    # PRIMER_DNA_CONC. primer3's own default of 50 nM is below the 200-500 nM of a typical
+    # PCR and puts every Tm about 2 C too low; 59-65 C at 250 nM are the same primers as
+    # 57-63 C at 50 nM.
+    "PRIMER_DNA_CONC": 250.0,
+    "PRIMER_MIN_TM": 59.0,
+    "PRIMER_OPT_TM": 62.0,
+    "PRIMER_MAX_TM": 65.0,
     "PRIMER_PAIR_MAX_DIFF_TM": 3.0,
     "PRIMER_MIN_GC": 35.0,
     "PRIMER_MAX_GC": 65.0,
@@ -70,6 +75,12 @@ class PrimerSelectionParams:
     use_thermodynamics: bool = True
     annealing_temp: Optional[float] = None  # default: PRIMER_MIN_TM - 3
     binding_tm_margin: float = 5.0  # a site binds if its duplex Tm >= annealing_temp - margin
+    # A product whose weaker site is up to this many C below the binding cutoff is a near
+    # miss and rejects the pair like a product (in input and background genomes). 0: off.
+    near_miss_tm_margin: float = 5.0
+    # Selected pairs must not form cross-pair products or near misses with each other, so
+    # all of them can be pooled in one reaction; false: only warn (separate reactions).
+    poolable: bool = True
     max_mismatches: int = 6  # prefilter: mismatches tolerated over the whole primer
     three_prime_region: int = 8  # 3'-terminal bases scrutinised separately
     three_prime_max_mismatches: int = 1  # mismatches tolerated inside the 3' region
@@ -112,6 +123,8 @@ class Config:
             raise ValueError("max_cores must be >= 1")
         if self.primer_selection.conservation not in {"all", "targets"}:
             raise ValueError("primer_selection.conservation must be 'all' or 'targets'")
+        if self.primer_selection.near_miss_tm_margin < 0:
+            raise ValueError("primer_selection.near_miss_tm_margin must be >= 0")
         if self.primer_selection.background_products not in {"distinguish", "reject"}:
             raise ValueError("primer_selection.background_products must be 'distinguish' or 'reject'")
         ld = self.locus_discovery
@@ -151,6 +164,20 @@ class Config:
         if not self.primer_selection.use_thermodynamics:
             return None
         return self.annealing_temp - self.primer_selection.binding_tm_margin
+
+    @property
+    def near_miss_site_tm(self) -> Optional[float]:
+        """Duplex Tm down to which a product rejects a pair as a near miss (None: no near-miss check)."""
+        margin = self.primer_selection.near_miss_tm_margin
+        if self.min_site_tm is None or margin <= 0:
+            return None
+        return self.min_site_tm - margin
+
+    def recommended_annealing_temp(self, left_tm: float, right_tm: float) -> float:
+        """Annealing temperature for a pair: 3 C below its weaker primer's Tm, never below the
+        annealing temperature the in silico PCR assumed (annealing at or above it only makes
+        the screen more conservative)."""
+        return max(self.annealing_temp, min(left_tm, right_tm) - 3.0)
 
     def product_size_ranges(self) -> List[List[int]]:
         return [list(map(int, r)) for r in self.primer3_params["PRIMER_PRODUCT_SIZE_RANGE"]]

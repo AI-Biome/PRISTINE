@@ -89,7 +89,7 @@ def test_unrelated_primers_give_nothing():
 # ---------------------------------------------------------------------------
 
 PRIMER = "GGTATAGAGCCTGACCGGGA"  # Tm ~60 C under PCR salt conditions
-THERMO = BindingParams(min_tm=49.0)
+THERMO = BindingParams(min_tm=51.0)  # default cutoff: PRIMER_MIN_TM 59 - 3 - 5, Tm at 250 nM primer
 
 
 def _embed(site, rng_seed=5):
@@ -168,3 +168,43 @@ def test_minus_strand_site_coordinates_and_seed_offsets():
     hits = find_sites("c", g, PRIMER, "F", BindingParams(max_mismatches=0, three_prime_max_mismatches=0))
     assert len(hits) == 1 and hits[0].strand == "-" and hits[0].start == 300 and hits[0].end == 320
     assert g[hits[0].start : hits[0].end] == revcomp(PRIMER)
+
+
+# ---------------------------------------------------------------------------
+# near misses: products just below the binding cutoff
+# ---------------------------------------------------------------------------
+
+def test_near_miss_product_reported_only_on_request():
+    from pristine.insilico_pcr import is_near_miss
+
+    rng = random.Random(9)
+    filler = lambda n: "".join(rng.choice("ACGT") for _ in range(n))
+    five_mm = "".join(_flip(b) if i in (0, 2, 4, 6, 8) else b for i, b in enumerate(PRIMER))
+    genome = {"c": filler(300) + five_mm + filler(700) + revcomp(REV) + filler(300)}
+    site_tm = Thermo().duplex_tm(PRIMER, revcomp(five_mm))
+    assert 46.0 <= site_tm < 51.0  # inside the near-miss band of the default cutoff
+    params = BindingParams(min_tm=51.0, near_miss_tm=46.0)
+    assert amplify(genome, PRIMER, REV, 2000, params) == []
+    near = amplify(genome, PRIMER, REV, 2000, params, include_near_misses=True)
+    assert len(near) == 1 and is_near_miss(near[0], params)
+    assert near[0].weakest_tm == pytest.approx(min(near[0].fwd_tm, near[0].rev_tm))
+    # a perfect product is returned either way and is not a near miss
+    perfect = {"c": filler(300) + PRIMER + filler(700) + revcomp(REV) + filler(300)}
+    prods = amplify(perfect, PRIMER, REV, 2000, params, include_near_misses=True)
+    assert len(prods) == 1 and not is_near_miss(prods[0], params)
+    assert amplify(perfect, PRIMER, REV, 2000, params) == prods
+    # below the near-miss band nothing is reported
+    assert amplify(genome, PRIMER, REV, 2000, BindingParams(min_tm=56.0, near_miss_tm=54.0),
+                   include_near_misses=True) == []
+
+
+def test_near_miss_cutoff_must_not_exceed_binding_cutoff():
+    with pytest.raises(ValueError, match="near_miss_tm"):
+        BindingParams(min_tm=50.0, near_miss_tm=52.0)
+    with pytest.raises(ValueError, match="near_miss_tm"):
+        BindingParams(near_miss_tm=45.0)
+
+
+def test_default_primer_concentration_raises_tm():
+    # 250 nM (the PRISTINE default) vs primer3's 50 nM: about 2 C higher
+    assert 1.5 < Thermo().primer_tm(PRIMER) - Thermo(dna_conc=50.0).primer_tm(PRIMER) < 3.0

@@ -12,9 +12,10 @@ primer3:
     PRIMER_MIN_SIZE: 18
     PRIMER_OPT_SIZE: 20
     PRIMER_MAX_SIZE: 25
-    PRIMER_MIN_TM: 57.0
-    PRIMER_OPT_TM: 60.0
-    PRIMER_MAX_TM: 63.0
+    PRIMER_DNA_CONC: 250.0     # nM primer, as in the PCR; all Tm values are computed at this concentration
+    PRIMER_MIN_TM: 59.0
+    PRIMER_OPT_TM: 62.0
+    PRIMER_MAX_TM: 65.0
     PRIMER_PRODUCT_SIZE_RANGE: "1000-1500"
 
 locus_discovery:
@@ -39,6 +40,8 @@ primer_selection:
   use_thermodynamics: true   # score candidate binding sites by duplex Tm (primer3 heterodimer)
   annealing_temp: null       # default: PRIMER_MIN_TM - 3
   binding_tm_margin: 5.0     # a genomic site counts as binding if its duplex Tm >= annealing_temp - margin
+  near_miss_tm_margin: 5.0   # products whose sites are up to this much weaker (near misses) also reject a pair
+  poolable: true             # selected pairs must not form products with each other (one reaction)
   max_mismatches: 6          # prefilter: mismatches tolerated over the whole primer
   three_prime_region: 8      # 3'-terminal bases scrutinised separately
   three_prime_max_mismatches: 1  # mismatches tolerated inside the 3' region

@@ -16,6 +16,13 @@ Binding sites of a primer are found in two stages:
    computed. The site binds if that Tm is at least ``min_tm`` (annealing temperature
    minus a safety margin). With ``min_tm=None`` the mismatch count alone decides.
 
+With ``include_near_misses=True``, ``amplify`` also returns products whose sites reach
+only ``near_miss_tm``, a few degrees below ``min_tm`` (``is_near_miss`` tells them
+apart). Once a product exists, later cycles prime on its perfect copies of the primer
+sequence, so a site just below the cutoff can still give a product in the lab; the
+pipeline therefore rejects pairs with near misses. Both thresholds use the same
+candidate sites and duplex Tm values, so the extra check is cheap.
+
 Products are all pairs of a plus-strand site and a downstream minus-strand site (any
 primer combination, including F/F and R/R) up to ``max_product_size``. Every product
 that does not lie inside the intended locus is an off-target product.
@@ -24,7 +31,7 @@ that does not lie inside the intended locus is an off-target product.
 from __future__ import annotations
 
 from bisect import bisect_right
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -37,7 +44,7 @@ TEMPLATE_SLACK = 3  # extra template bases beyond the primer 5' end given to the
 class Thermo:
     """Thin wrapper around primer3's ThermoAnalysis with PCR-like salt conditions."""
 
-    def __init__(self, mv_conc: float = 50.0, dv_conc: float = 1.5, dntp_conc: float = 0.6, dna_conc: float = 50.0):
+    def __init__(self, mv_conc: float = 50.0, dv_conc: float = 1.5, dntp_conc: float = 0.6, dna_conc: float = 250.0):
         from primer3 import thermoanalysis
 
         self._ta = thermoanalysis.ThermoAnalysis(mv_conc=mv_conc, dv_conc=dv_conc, dntp_conc=dntp_conc, dna_conc=dna_conc)
@@ -67,12 +74,15 @@ class BindingParams:
     seed_length: int = 4  # exact k-mer used to find candidate sites
     min_tm: Optional[float] = None  # None: mismatch counts alone decide
     thermo: Optional[Thermo] = None
+    near_miss_tm: Optional[float] = None  # lower cutoff for near misses (below min_tm)
 
     def __post_init__(self) -> None:
         if self.min_tm is not None and self.thermo is None:
             self.thermo = Thermo()
         if self.seed_length < 1 or self.seed_length > 12:
             raise ValueError("seed_length must be between 1 and 12")
+        if self.near_miss_tm is not None and (self.min_tm is None or self.near_miss_tm > self.min_tm):
+            raise ValueError("near_miss_tm needs min_tm and must not exceed it")
 
 
 _BASE_CODE = np.full(256, 4, dtype=np.uint8)  # A,C,G,T -> 0..3; anything else -> 4 (invalid)
@@ -179,6 +189,18 @@ class Product:
     @property
     def size(self) -> int:
         return self.end - self.start
+
+    @property
+    def weakest_tm(self) -> Optional[float]:
+        tms = [t for t in (self.fwd_tm, self.rev_tm) if t is not None]
+        return min(tms) if tms else None
+
+
+def is_near_miss(product: Product, params: BindingParams) -> bool:
+    """True if a product of ``amplify(..., include_near_misses=True)`` has a site below the
+    binding cutoff ``params.min_tm`` (a near miss)."""
+    tm = product.weakest_tm
+    return params.min_tm is not None and tm is not None and tm < params.min_tm
 
 
 def _as_bytes(s: str) -> np.ndarray:
@@ -317,8 +339,14 @@ def amplify(
     reverse: str,
     max_product_size: int,
     params: Optional[BindingParams] = None,
+    include_near_misses: bool = False,
 ) -> List[Product]:
+    """Products of a primer pair in one genome. By default only products whose sites both
+    bind (duplex Tm >= params.min_tm); with `include_near_misses` also those whose sites
+    reach params.near_miss_tm (see `is_near_miss`)."""
     params = params or BindingParams()
+    if include_near_misses and params.near_miss_tm is not None:
+        params = replace(params, min_tm=params.near_miss_tm, near_miss_tm=None)
     index = genome if isinstance(genome, GenomeIndex) else GenomeIndex(genome)
     primer_of = {"F": forward.upper(), "R": reverse.upper()}
     products: List[Product] = []
